@@ -1,0 +1,81 @@
+# ldap-kdc as a system service.
+#
+# Install it as /etc/systemd/system/ldap-kdc.service, with the binary at /usr/local/bin/ldap-kdc and
+# the configuration at /etc/ldap-kdc/ldap-kdc.yaml. The account the unit runs as is made by the
+# sysusers fragment below, which systemd applies on its own:
+#
+#   printf 'u ldap-kdc - "ldap-kdc directory service" /var/lib/ldap-kdc -\n' \
+#       > /etc/sysusers.d/ldap-kdc.conf && systemd-sysusers
+#
+# What this unit is careful about is the one thing a directory service must not get wrong: it holds
+# every principal's long-term key, so the process that answers the network is given the privilege to
+# bind three ports and nothing else at all.
+
+[Unit]
+Description=ldap-kdc — one directory over LDAP and Kerberos
+Documentation=https://github.com/shulutkov/ldap-kdc
+# A KDC that starts before the machine has an address binds to whatever exists at that moment, and
+# on a host whose address arrives by DHCP that is the loopback alone. The failure is silent — the
+# service is up, the port is open, and every client on the network times out.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/ldap-kdc -c /etc/ldap-kdc/ldap-kdc.yaml
+User=ldap-kdc
+Group=ldap-kdc
+Restart=on-failure
+RestartSec=2s
+
+# The database and the master key that seals it. 0700 because the two files together ARE the realm:
+# key material is reversible by construction, so a readable state directory is every principal's
+# long-term key. StateDirectory also creates it with the right owner on first start, which is what
+# keeps the unit self-contained.
+StateDirectory=ldap-kdc
+StateDirectoryMode=0700
+
+# Ports 88 (KDC), 389 (LDAP) and 464 (kpasswd) are privileged, and binding them is the ONLY thing
+# this service needs beyond an ordinary account. Granting the capability rather than running as root
+# is what makes the difference real: with the bounding set narrowed to it, a compromised process
+# cannot acquire any other, so it cannot read another user's files, load a module or trace a process
+# even though it holds the keys to the realm.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# The filesystem, as little of it as the service can be given. ProtectSystem=strict makes everything
+# read-only except what is granted back above; ProtectHome hides the users' data from a service that
+# has no business in it. A directory service reads its configuration and writes its database, and
+# that is the whole list.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+
+# The address families it speaks: Kerberos and LDAP over IPv4 and IPv6, and the local socket the Go
+# runtime uses for name resolution. Nothing else — a service that never opens a raw socket should
+# not be able to.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# The syscalls a network service makes. @privileged and @resources are removed because holding the
+# keys of a realm and being able to change the machine's are different jobs.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
