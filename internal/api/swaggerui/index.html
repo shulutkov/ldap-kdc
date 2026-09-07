@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ldap-kdc API</title>
+  <link rel="stylesheet" href="swagger-ui.css">
+  <style>
+    body { margin: 0; background: #fafafa; }
+    .swagger-ui .topbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="swagger-ui-bundle.js"></script>
+  <script>
+    // The document is fetched relative to this page, so the service answers under whatever
+    // address it was reached by -- a container port, a reverse proxy prefix -- without being told
+    // its own URL.
+    window.ui = SwaggerUIBundle({
+      url: "../openapi.json",
+      dom_id: "#swagger-ui",
+      layout: "BaseLayout",
+      presets: [SwaggerUIBundle.presets.apis],
+      deepLinking: true,
+      persistAuthorization: true,
+      defaultModelsExpandDepth: 0,
+      docExpansion: "list",
+      tryItOutEnabled: true
+    });
+  </script>
+</body>
+</html>

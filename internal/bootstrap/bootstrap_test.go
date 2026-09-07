@@ -495,3 +495,52 @@ func TestPermissionWarningOnAPlanHoldingPasswords(t *testing.T) {
 		})
 	}
 }
+
+func TestAPlanCarriesCustomAttributes(t *testing.T) {
+	ctx := context.Background()
+	st, opts := testStore(t)
+
+	apply(t, st, opts, `
+groups:
+  - name: engineering
+    gid_number: 5000
+    custom_attributes:
+      costCentre: ["CC-42"]
+users:
+  - name: alice
+    primary_group: 5000
+    custom_attributes:
+      departmentHead: ["engineering"]
+`)
+
+	g, err := st.GetGroup(ctx, "engineering")
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if v := g.CustomAttrs["costCentre"]; len(v) != 1 || v[0] != "CC-42" {
+		t.Errorf("group attributes = %v", g.CustomAttrs)
+	}
+
+	u, err := st.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if v := u.CustomAttrs["departmentHead"]; len(v) != 1 || v[0] != "engineering" {
+		t.Errorf("user attributes = %v", u.CustomAttrs)
+	}
+}
+
+func TestAPlanNamingAReservedAttributeIsRejected(t *testing.T) {
+	_, opts := testStore(t)
+
+	// The whole plan is checked before any of it is applied, so a bad attribute name is
+	// reported against the file rather than left half applied.
+	plan := &Plan{Users: []User{{
+		Name: "alice", PrimaryGroup: 5000,
+		CustomAttrs: map[string][]string{"memberOf": {"cn=admins"}},
+	}}}
+
+	if err := plan.Validate(opts); err == nil {
+		t.Fatal("a plan overriding memberOf was accepted")
+	}
+}

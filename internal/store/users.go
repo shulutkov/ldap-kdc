@@ -169,30 +169,14 @@ func (s *Store) decorateUsers(ctx context.Context, q querier, users []User, ids 
 		return err
 	}
 
-	rows, err = q.QueryContext(ctx,
-		`SELECT user_id, name, value FROM user_attrs WHERE user_id IN (`+ph+`) ORDER BY user_id, name, position`, args...)
+	attrs, err := s.loadAttrs(ctx, q, "user", ids)
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var (
-			id        int64
-			name, val string
-		)
-		if err := rows.Scan(&id, &name, &val); err != nil {
-			_ = rows.Close()
-
-			return err
-		}
+	for id, a := range attrs {
 		if u := index[id]; u != nil {
-			if u.CustomAttrs == nil {
-				u.CustomAttrs = make(map[string][]string)
-			}
-			u.CustomAttrs[name] = append(u.CustomAttrs[name], val)
+			u.CustomAttrs = a
 		}
-	}
-	if err := closeRows(rows); err != nil {
-		return err
 	}
 
 	rows, err = q.QueryContext(ctx,
@@ -353,7 +337,11 @@ func (s *Store) DeleteUser(ctx context.Context, name string) error {
 			return err
 		}
 
-		// Principals, keys, groups, SSH keys and attributes all cascade from the user row.
+		if err := deleteAttrs(ctx, tx, "user", u.ID); err != nil {
+			return err
+		}
+
+		// Principals, keys, groups and SSH keys all cascade from the user row.
 		_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, u.ID)
 
 		return err
@@ -389,23 +377,8 @@ func (s *Store) writeUserChildren(ctx context.Context, tx *sql.Tx, u *User) erro
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM user_attrs WHERE user_id = ?`, u.ID); err != nil {
+	if err := s.replaceAttrs(ctx, tx, "user", u.ID, u.CustomAttrs); err != nil {
 		return err
-	}
-	names := make([]string, 0, len(u.CustomAttrs))
-	for n := range u.CustomAttrs {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		for i, v := range u.CustomAttrs[n] {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO user_attrs (user_id, name, position, value) VALUES (?, ?, ?, ?)`,
-				u.ID, n, i, v,
-			); err != nil {
-				return err
-			}
-		}
 	}
 
 	return s.replaceCapabilities(ctx, tx, "user", u.ID, u.Capabilities)

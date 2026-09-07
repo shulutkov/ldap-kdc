@@ -7,18 +7,20 @@ import (
 )
 
 type createGroupRequest struct {
-	Name          string             `json:"name"`
-	GIDNumber     int                `json:"gidNumber"`
-	Description   string             `json:"description,omitempty"`
-	IncludeGroups []int              `json:"includeGroups,omitempty"`
-	Capabilities  []store.Capability `json:"capabilities,omitempty"`
+	Name          string              `json:"name" required:"true" example:"staff"`
+	GIDNumber     int                 `json:"gidNumber" description:"Allocated automatically when left out."`
+	Description   string              `json:"description,omitempty"`
+	IncludeGroups []int               `json:"includeGroups,omitempty"`
+	Capabilities  []store.Capability  `json:"capabilities,omitempty"`
+	CustomAttrs   map[string][]string `json:"customAttributes,omitempty"`
 }
 
 type patchGroupRequest struct {
-	GIDNumber     *int                `json:"gidNumber,omitempty"`
-	Description   *string             `json:"description,omitempty"`
-	IncludeGroups *[]int              `json:"includeGroups,omitempty"`
-	Capabilities  *[]store.Capability `json:"capabilities,omitempty"`
+	GIDNumber     *int                 `json:"gidNumber,omitempty"`
+	Description   *string              `json:"description,omitempty"`
+	IncludeGroups *[]int               `json:"includeGroups,omitempty"`
+	Capabilities  *[]store.Capability  `json:"capabilities,omitempty"`
+	CustomAttrs   *map[string][]string `json:"customAttributes,omitempty"`
 }
 
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +31,7 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+	writeJSON(w, http.StatusOK, groupsBody{Groups: groups})
 }
 
 func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +42,7 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"group": g})
+	writeJSON(w, http.StatusOK, groupBody{Group: g})
 }
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +60,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	g := &store.Group{
 		Name: req.Name, GIDNumber: req.GIDNumber, Description: req.Description,
 		IncludeGroups: req.IncludeGroups, Capabilities: req.Capabilities,
+		CustomAttrs: req.CustomAttrs,
 	}
 
 	if g.GIDNumber == 0 {
@@ -77,7 +80,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info().Str("group", g.Name).Int("gid", g.GIDNumber).Msg("group created")
-	writeJSON(w, http.StatusCreated, map[string]any{"group": g})
+	writeJSON(w, http.StatusCreated, groupBody{Group: g})
 }
 
 func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +94,7 @@ func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request) {
 		applyIf(req.Description, &g.Description)
 		applyIf(req.IncludeGroups, &g.IncludeGroups)
 		applyIf(req.Capabilities, &g.Capabilities)
+		applyIf(req.CustomAttrs, &g.CustomAttrs)
 
 		return nil
 	})
@@ -100,7 +104,7 @@ func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"group": updated})
+	writeJSON(w, http.StatusOK, groupBody{Group: updated})
 }
 
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
@@ -132,5 +136,5 @@ func (s *Server) handleGroupMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+	writeJSON(w, http.StatusOK, membersBody{Members: members})
 }

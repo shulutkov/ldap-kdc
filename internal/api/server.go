@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
@@ -32,6 +31,8 @@ type Config struct {
 
 	// Token, when set, must be presented as a bearer token on every /api request.
 	Token string
+	// Docs serves the OpenAPI document and the Swagger UI that renders it.
+	Docs bool
 	// MinPasswordLength is enforced on every password the API sets.
 	MinPasswordLength int
 
@@ -50,6 +51,9 @@ type Server struct {
 
 	http *http.Server
 	ln   net.Listener
+
+	// spec is the OpenAPI document, rendered once from the route table.
+	spec []byte
 }
 
 // New builds the management server.
@@ -65,6 +69,16 @@ func New(cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) (*
 		metrics: m,
 	}
 
+	// The document is built here rather than on request: it cannot change while the process
+	// runs, and a mistake in the route table is then a start-up failure rather than a broken
+	// page found by whoever opened it.
+	spec, err := s.buildSpec()
+	if err != nil {
+		return nil, fmt.Errorf("api: building the OpenAPI document: %w", err)
+	}
+
+	s.spec = spec
+
 	s.http = &http.Server{
 		Handler:           s.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -77,53 +91,253 @@ func New(cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) (*
 	return s, nil
 }
 
+// route is one pattern, the handler that answers it, and what the OpenAPI document says about it.
+//
+// The routes live in a table rather than in a sequence of calls because the document is generated
+// from this very table when the service starts: there is one list of what this API does, and the
+// router and the documentation both read it.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+	docs    []operationDoc
+}
+
+// publicRoutes are the endpoints outside the bearer token: an orchestrator's probes and the
+// metrics a scraper reads, neither of which should need a credential that can change passwords.
+func (s *Server) publicRoutes() []route {
+	return []route{
+		{"GET /healthz", s.handleHealth, []operationDoc{{
+			tag: "operations", public: true, summary: "Liveness",
+			description: "Reports that the process is running. It never touches the database, " +
+				"so a stuck query cannot make a healthy process look dead to an orchestrator.",
+			responses: []responseDoc{ok(new(statusBody), "The process is running.")},
+		}}},
+		{"GET /readyz", s.handleReady, []operationDoc{{
+			tag: "operations", public: true, summary: "Readiness",
+			description: "Reports whether the service can serve: the database answers and the realm is initialised.",
+			responses: []responseDoc{
+				ok(new(statusBody), "Ready."),
+				{status: http.StatusServiceUnavailable, body: new(statusBody), description: "Not ready, with the reason."},
+			},
+		}}},
+		{"GET /metrics", s.handleMetrics, []operationDoc{{
+			tag: "operations", public: true, summary: "Prometheus metrics",
+			responses: []responseDoc{{
+				status: http.StatusOK, body: new(string), contentType: "text/plain",
+				description: "Metrics in the Prometheus text format.",
+			}},
+		}}},
+	}
+}
+
+// apiRoutes is everything under /api/v1, which is everything behind the bearer token.
+//
+// Service principal names carry slashes ("HTTP/host.example.com"), so their patterns take a
+// trailing wildcard that swallows the rest of the path and the actions under a principal are
+// matched inside the handler. The document names those actions as the paths they are.
+func (s *Server) apiRoutes() []route {
+	return []route{
+		{"GET /api/v1/stats", s.handleStats, []operationDoc{{
+			tag: "operations", summary: "What the directory holds",
+			responses: []responseDoc{ok(new(statsBody), "Counts and the realm's enctypes."), unauthorized},
+		}}},
+
+		{"GET /api/v1/users", s.handleListUsers, []operationDoc{{
+			tag: "users", summary: "List accounts",
+			responses: []responseDoc{ok(new(usersBody), "Every account."), unauthorized},
+		}}},
+		{"POST /api/v1/users", s.handleCreateUser, []operationDoc{{
+			tag: "users", summary: "Create an account",
+			description: "Creates the directory account and the Kerberos principal named after it. " +
+				"There is no state where one exists without the other: an account meant never to " +
+				"use Kerberos is simply given no password, and its principal keeps the random keys " +
+				"it starts with, which no password produces.",
+			request:   new(createUserRequest),
+			responses: []responseDoc{created(new(userBody), "Created."), badRequest, unauthorized, conflict},
+		}}},
+		{"GET /api/v1/users/{name}", s.handleGetUser, []operationDoc{{
+			tag: "users", summary: "Read an account", request: new(getUserReq),
+			responses: []responseDoc{ok(new(userBody), "The account and the principals attached to it."), unauthorized, notFound},
+		}}},
+		{"PATCH /api/v1/users/{name}", s.handlePatchUser, []operationDoc{{
+			tag: "users", summary: "Edit an account",
+			description: "Only the fields present are changed. Disabling an account disables its " +
+				"principals too, or it would keep collecting tickets after being locked out of LDAP.",
+			request:   new(patchUserReq),
+			responses: []responseDoc{ok(new(userBody), "The account as it now stands."), badRequest, unauthorized, notFound},
+		}}},
+		{"DELETE /api/v1/users/{name}", s.handleDeleteUser, []operationDoc{{
+			tag: "users", summary: "Remove an account",
+			description: "Principals, keys, group memberships and attributes go with it.",
+			request:     new(getUserReq),
+			responses:   []responseDoc{noContent("Removed."), unauthorized, notFound},
+		}}},
+		{"POST /api/v1/users/{name}/password", s.handleSetUserPassword, []operationDoc{{
+			tag: "users", summary: "Set an account's password",
+			description: "Writes both credential forms at once. The password is expired by default, " +
+				"so its owner chooses the final value at first login: one an administrator typed is " +
+				"one the administrator knows, and FreeIPA expires an administrative reset for the " +
+				"same reason.",
+			request:   new(setUserPasswordReq),
+			responses: []responseDoc{ok(new(passwordSetBody), "Set."), badRequest, unauthorized, notFound},
+		}}},
+		{"GET /api/v1/users/{name}/app-passwords", s.handleListAppPasswords, []operationDoc{{
+			tag: "users", summary: "List an account's application passwords", request: new(getUserReq),
+			responses: []responseDoc{ok(new(appPasswordsBody), "The application passwords, without their secrets."), unauthorized, notFound},
+		}}},
+		{"POST /api/v1/users/{name}/app-passwords", s.handleCreateAppPassword, []operationDoc{{
+			tag: "users", summary: "Mint an application password",
+			description: "An additional password that authenticates one application over LDAP. " +
+				"Revoking it does not disturb the account's own password. A generated secret is " +
+				"returned once, here, because nothing stores it in the clear.",
+			request:   new(appPasswordReq),
+			responses: []responseDoc{created(new(appPasswordBody), "Created."), badRequest, unauthorized, notFound},
+		}}},
+		{"DELETE /api/v1/users/{name}/app-passwords/{id}", s.handleDeleteAppPassword, []operationDoc{{
+			tag: "users", summary: "Revoke an application password", request: new(appPasswordPath),
+			responses: []responseDoc{noContent("Revoked."), badRequest, unauthorized, notFound},
+		}}},
+
+		{"GET /api/v1/groups", s.handleListGroups, []operationDoc{{
+			tag: "groups", summary: "List groups",
+			responses: []responseDoc{ok(new(groupsBody), "Every group."), unauthorized},
+		}}},
+		{"POST /api/v1/groups", s.handleCreateGroup, []operationDoc{{
+			tag: "groups", summary: "Create a group", request: new(createGroupRequest),
+			responses: []responseDoc{created(new(groupBody), "Created."), badRequest, unauthorized, conflict},
+		}}},
+		{"GET /api/v1/groups/{name}", s.handleGetGroup, []operationDoc{{
+			tag: "groups", summary: "Read a group", request: new(groupPath),
+			responses: []responseDoc{ok(new(groupBody), "The group."), unauthorized, notFound},
+		}}},
+		{"PATCH /api/v1/groups/{name}", s.handlePatchGroup, []operationDoc{{
+			tag: "groups", summary: "Edit a group", request: new(patchGroupReq),
+			responses: []responseDoc{ok(new(groupBody), "The group as it now stands."), badRequest, unauthorized, notFound},
+		}}},
+		{"DELETE /api/v1/groups/{name}", s.handleDeleteGroup, []operationDoc{{
+			tag: "groups", summary: "Remove a group",
+			description: "Refused while the group is any account's primary group.",
+			request:     new(groupPath),
+			responses:   []responseDoc{noContent("Removed."), unauthorized, notFound},
+		}}},
+		{"GET /api/v1/groups/{name}/members", s.handleGroupMembers, []operationDoc{{
+			tag: "groups", summary: "Resolved membership",
+			description: "Follows included groups, so this is the set the LDAP entry publishes.",
+			request:     new(groupPath),
+			responses:   []responseDoc{ok(new(membersBody), "Member account names."), unauthorized, notFound},
+		}}},
+
+		{"GET /api/v1/principals", s.handleListPrincipals, []operationDoc{{
+			tag: "principals", summary: "List principals", request: new(principalsQuery),
+			responses: []responseDoc{ok(new(principalsBody), "Principals, without key material."), unauthorized},
+		}}},
+		{"POST /api/v1/principals", s.handleCreatePrincipal, []operationDoc{{
+			tag: "principals", summary: "Create a principal",
+			description: "A service principal is better left without a password: random keys cannot " +
+				"be guessed, and the keytab is fetched from this API.",
+			request:   new(createPrincipalRequest),
+			responses: []responseDoc{created(new(principalBody), "Created."), badRequest, unauthorized, conflict},
+		}}},
+		{"GET /api/v1/principals/{name...}", s.handlePrincipalGet, []operationDoc{
+			{
+				tag: "principals", summary: "Read a principal", request: new(principalPath),
+				responses: []responseDoc{
+					ok(new(principalBody), "The principal, its policy and the krbTicketFlags bitmask MIT and FreeIPA store."),
+					badRequest, unauthorized, notFound,
+				},
+			},
+			{
+				path: "/api/v1/principals/{name}/keytab",
+				tag:  "principals", summary: "Keytab for the current key version",
+				request: new(principalPath),
+				responses: []responseDoc{
+					{status: http.StatusOK, body: new(keytabFile), contentType: "application/octet-stream", description: "A keytab file."},
+					unauthorized, notFound, conflict,
+				},
+			},
+		}},
+		{"POST /api/v1/principals/{name...}", s.handlePrincipalPost, []operationDoc{{
+			path: "/api/v1/principals/{name}/password",
+			tag:  "principals", summary: "Re-key a principal",
+			description: "The previous key version is kept, so tickets and keytabs issued before the " +
+				"change keep working until they expire. The salt follows the principal's canonical " +
+				"name, so a password set through an alias produces the same keys as one set through " +
+				"the real name.",
+			request:   new(principalPasswordReq),
+			responses: []responseDoc{ok(new(principalBody), "Re-keyed."), badRequest, unauthorized, notFound},
+		}}},
+		{"PATCH /api/v1/principals/{name...}", s.handlePatchPrincipal, []operationDoc{{
+			tag: "principals", summary: "Edit a principal's policy", request: new(patchPrincipalReq),
+			responses: []responseDoc{ok(new(principalBody), "The principal as it now stands."), badRequest, unauthorized, notFound, conflict},
+		}}},
+		{"DELETE /api/v1/principals/{name...}", s.handleDeletePrincipal, []operationDoc{{
+			tag: "principals", summary: "Remove a principal",
+			description: "The realm's own ticket-granting principal cannot be removed; without it no " +
+				"ticket in circulation would verify.",
+			request:   new(principalPath),
+			responses: []responseDoc{noContent("Removed."), badRequest, unauthorized, notFound, conflict},
+		}}},
+
+		{"GET /api/v1/dns/records", s.handleListDNSRecords, []operationDoc{{
+			tag: "dns", summary: "List resource records", request: new(dnsRecordsQuery),
+			responses: []responseDoc{ok(new(dnsRecordsBody), "The records, and the zones this service answers for."), unauthorized},
+		}}},
+		{"POST /api/v1/dns/records", s.handleCreateDNSRecord, []operationDoc{{
+			tag: "dns", summary: "Create a resource record",
+			description: "Reverse answers are computed from the address records rather than stored, " +
+				"so there are no PTR records to write and nothing that can drift out of step.",
+			request:   new(createDNSRecordRequest),
+			responses: []responseDoc{created(new(dnsRecordBody), "Created."), badRequest, unauthorized, conflict},
+		}}},
+		{"DELETE /api/v1/dns/records/{id}", s.handleDeleteDNSRecord, []operationDoc{{
+			tag: "dns", summary: "Remove a resource record", request: new(dnsRecordPath),
+			responses: []responseDoc{noContent("Removed."), badRequest, unauthorized, notFound},
+		}}},
+
+		{"GET /api/v1/trusts", s.handleListTrusts, []operationDoc{{
+			tag: "trusts", summary: "List cross-realm trusts",
+			responses: []responseDoc{ok(new(trustsBody), "Every trust."), unauthorized},
+		}}},
+		{"POST /api/v1/trusts", s.handleCreateTrust, []operationDoc{{
+			tag: "trusts", summary: "Create a cross-realm trust",
+			description: "A trust is two principals: krbtgt/REMOTE@LOCAL refers this realm's clients " +
+				"outwards, and krbtgt/LOCAL@REMOTE accepts the remote realm's clients here. Both are " +
+				"keyed from the same shared password, which is exactly the string entered on the " +
+				"other side.",
+			request:   new(createTrustRequest),
+			responses: []responseDoc{created(new(trustBody), "Created."), badRequest, unauthorized, conflict},
+		}}},
+		{"GET /api/v1/trusts/{realm}", s.handleGetTrust, []operationDoc{{
+			tag: "trusts", summary: "Read a trust", request: new(trustPath),
+			responses: []responseDoc{ok(new(trustBody), "The trust."), unauthorized, notFound},
+		}}},
+		{"PATCH /api/v1/trusts/{realm}", s.handlePatchTrust, []operationDoc{{
+			tag: "trusts", summary: "Edit a trust", request: new(patchTrustReq),
+			responses: []responseDoc{ok(new(trustBody), "The trust as it now stands."), badRequest, unauthorized, notFound},
+		}}},
+		{"DELETE /api/v1/trusts/{realm}", s.handleDeleteTrust, []operationDoc{{
+			tag: "trusts", summary: "Remove a trust",
+			description: "The shared krbtgt principals go with it, which is what stops tickets flowing.",
+			request:     new(trustPath),
+			responses:   []responseDoc{noContent("Removed."), unauthorized, notFound},
+		}}},
+	}
+}
+
 // routes builds the request multiplexer.
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.Handle("GET /metrics", promhttp.HandlerFor(s.metrics.Registry, promhttp.HandlerOpts{}))
+	for _, r := range s.publicRoutes() {
+		mux.HandleFunc(r.pattern, r.handler)
+	}
+
+	s.docsRoutes(mux)
 
 	api := http.NewServeMux()
-
-	api.HandleFunc("GET /api/v1/stats", s.handleStats)
-
-	api.HandleFunc("GET /api/v1/users", s.handleListUsers)
-	api.HandleFunc("POST /api/v1/users", s.handleCreateUser)
-	api.HandleFunc("GET /api/v1/users/{name}", s.handleGetUser)
-	api.HandleFunc("PATCH /api/v1/users/{name}", s.handlePatchUser)
-	api.HandleFunc("DELETE /api/v1/users/{name}", s.handleDeleteUser)
-	api.HandleFunc("POST /api/v1/users/{name}/password", s.handleSetUserPassword)
-	api.HandleFunc("GET /api/v1/users/{name}/app-passwords", s.handleListAppPasswords)
-	api.HandleFunc("POST /api/v1/users/{name}/app-passwords", s.handleCreateAppPassword)
-	api.HandleFunc("DELETE /api/v1/users/{name}/app-passwords/{id}", s.handleDeleteAppPassword)
-
-	api.HandleFunc("GET /api/v1/groups", s.handleListGroups)
-	api.HandleFunc("POST /api/v1/groups", s.handleCreateGroup)
-	api.HandleFunc("GET /api/v1/groups/{name}", s.handleGetGroup)
-	api.HandleFunc("PATCH /api/v1/groups/{name}", s.handlePatchGroup)
-	api.HandleFunc("DELETE /api/v1/groups/{name}", s.handleDeleteGroup)
-	api.HandleFunc("GET /api/v1/groups/{name}/members", s.handleGroupMembers)
-
-	// Service principal names carry slashes ("HTTP/host.example.com"), so the trailing wildcard
-	// has to swallow the rest of the path rather than stop at the first separator.
-	api.HandleFunc("GET /api/v1/principals", s.handleListPrincipals)
-	api.HandleFunc("POST /api/v1/principals", s.handleCreatePrincipal)
-	api.HandleFunc("GET /api/v1/principals/{name...}", s.handlePrincipalGet)
-	api.HandleFunc("POST /api/v1/principals/{name...}", s.handlePrincipalPost)
-	api.HandleFunc("PATCH /api/v1/principals/{name...}", s.handlePatchPrincipal)
-	api.HandleFunc("DELETE /api/v1/principals/{name...}", s.handleDeletePrincipal)
-
-	api.HandleFunc("GET /api/v1/dns/records", s.handleListDNSRecords)
-	api.HandleFunc("POST /api/v1/dns/records", s.handleCreateDNSRecord)
-	api.HandleFunc("DELETE /api/v1/dns/records/{id}", s.handleDeleteDNSRecord)
-
-	api.HandleFunc("GET /api/v1/trusts", s.handleListTrusts)
-	api.HandleFunc("POST /api/v1/trusts", s.handleCreateTrust)
-	api.HandleFunc("GET /api/v1/trusts/{realm}", s.handleGetTrust)
-	api.HandleFunc("PATCH /api/v1/trusts/{realm}", s.handlePatchTrust)
-	api.HandleFunc("DELETE /api/v1/trusts/{realm}", s.handleDeleteTrust)
+	for _, r := range s.apiRoutes() {
+		api.HandleFunc(r.pattern, r.handler)
+	}
 
 	mux.Handle("/api/", s.authenticate(api))
 
@@ -236,11 +450,6 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// errorBody is the shape of every failure reply.
-type errorBody struct {
-	Error string `json:"error"`
-}
-
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -265,6 +474,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, "already exists")
+	case errors.Is(err, store.ErrInvalidAttribute):
+		writeError(w, http.StatusBadRequest, "%s", err)
 	default:
 		writeError(w, http.StatusInternalServerError, "%s", err)
 	}

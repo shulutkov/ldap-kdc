@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -316,6 +317,40 @@ func TestAnAliasReachesTheSameAccount(t *testing.T) {
 	} {
 		if !strings.Contains(search, want) {
 			t.Errorf("the entry is missing %q:\n%s", want, search)
+		}
+	}
+}
+
+// TestTheDocumentationShipsInTheImage checks that the embedded API documentation survives into the
+// scratch image, which holds no files of its own: were it read from disk it would 404 here and
+// nowhere else.
+func TestTheDocumentationShipsInTheImage(t *testing.T) {
+	for _, tc := range []struct{ path, contains string }{
+		// No token: a browser cannot put a header on the address bar, so the page and the
+		// document have to be readable without one.
+		{"/docs/", "swagger-ui-bundle.js"},
+		{"/docs/swagger-ui-bundle.js", "SwaggerUIBundle"},
+		{"/openapi.json", "ldap-kdc management API"},
+	} {
+		// apiBase points at the versioned API; the documentation sits above it.
+		res, err := http.Get(strings.TrimSuffix(shared.apiBase, "/v1") + tc.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", tc.path, err)
+		}
+
+		body, err := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+
+		if err != nil {
+			t.Fatalf("reading %s: %v", tc.path, err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d", tc.path, res.StatusCode)
+
+			continue
+		}
+		if !strings.Contains(string(body), tc.contains) {
+			t.Errorf("%s does not look like the real thing: %d bytes", tc.path, len(body))
 		}
 	}
 }

@@ -114,7 +114,9 @@ func (h *harness) seed(t *testing.T) {
 	ctx := context.Background()
 
 	for _, g := range []*store.Group{
-		{Name: "staff", GIDNumber: 5000},
+		{Name: "staff", GIDNumber: 5000, CustomAttrs: map[string][]string{
+			"costCentre": {"CC-42"},
+		}},
 		{Name: "everyone", GIDNumber: 5001, IncludeGroups: []int{5000}},
 		{Name: "admins", GIDNumber: 5002, Capabilities: []store.Capability{
 			{Action: "search", Object: "*"},
@@ -131,6 +133,7 @@ func (h *harness) seed(t *testing.T) {
 		GivenName: "Alice", SN: "Example", Mail: "alice@example.com",
 		Capabilities: []store.Capability{{Action: "search", Object: testBaseDN}},
 		SSHKeys:      []string{"ssh-ed25519 AAAAC3Nz alice@laptop"},
+		CustomAttrs:  map[string][]string{"departmentHead": {"staff"}},
 	}, alicePass)
 
 	// alice answers to a second name, which is what the entry publishes as a multivalued
@@ -602,5 +605,80 @@ func TestGroupsCarryASecurityIdentifier(t *testing.T) {
 	}
 	if sid := res.Entries[0].GetAttributeValue("ipaNTSecurityIdentifier"); !strings.HasPrefix(sid, "S-1-5-21-") {
 		t.Errorf("ipaNTSecurityIdentifier = %q", sid)
+	}
+}
+
+// TestCustomAttributesAnswerAnAuthorizationQuery checks the case they exist for: a fact recorded
+// next to the account, published as an ordinary attribute, and reachable by a search filter -- so
+// a policy engine elsewhere can ask the directory rather than keep a table of its own.
+func TestCustomAttributesAnswerAnAuthorizationQuery(t *testing.T) {
+	h := newHarness(t)
+
+	conn := h.dial(t)
+	if err := conn.Bind(aliceDN(), alicePass); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	res, err := conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		"(&(objectClass=posixAccount)(departmentHead=staff))",
+		[]string{"cn", "departmentHead"}, nil))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("got %d entries, want only the one account the attribute names", len(res.Entries))
+	}
+	if got := res.Entries[0].GetAttributeValue("cn"); got != "alice" {
+		t.Errorf("the filter matched %q", got)
+	}
+	if got := res.Entries[0].GetAttributeValue("departmentHead"); got != "staff" {
+		t.Errorf("departmentHead = %q", got)
+	}
+
+	// Groups carry them too, so a rule can be written about the department rather than about
+	// each of its members.
+	res, err = conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		"(&(objectClass=posixGroup)(costCentre=CC-42))", []string{"cn", "costCentre"}, nil))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 1 || res.Entries[0].GetAttributeValue("cn") != "staff" {
+		t.Fatalf("the group attribute is not searchable: %d entries", len(res.Entries))
+	}
+}
+
+func TestAModifyCannotForgeAnAttributeTheDirectoryBuilds(t *testing.T) {
+	h := newHarness(t)
+
+	conn := h.dial(t)
+	if err := conn.Bind(aliceDN(), alicePass); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	// memberOf is computed from group membership. Were it writable, an account could hand
+	// itself whatever membership a rule elsewhere reads out of this directory.
+	req := ldap.NewModifyRequest(aliceDN())
+	req.Replace("memberOf", []string{"cn=admins,ou=groups," + testBaseDN})
+
+	err := conn.Modify(req)
+	if err == nil {
+		t.Fatal("an account was allowed to write its own memberOf")
+	}
+	if !strings.Contains(err.Error(), "Constraint Violation") {
+		t.Errorf("error = %v, want a constraint violation", err)
+	}
+
+	res, err := conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		"(cn=alice)", []string{"memberOf"}, nil))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	for _, v := range res.Entries[0].GetAttributeValues("memberOf") {
+		if strings.Contains(v, "admins") {
+			t.Errorf("memberOf was forged: %v", res.Entries[0].GetAttributeValues("memberOf"))
+		}
 	}
 }

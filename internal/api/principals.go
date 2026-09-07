@@ -9,14 +9,11 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/store"
 )
 
-// timeNow exists so the trust handler and the principal handler agree on "now".
-func timeNow() time.Time { return time.Now().UTC() }
-
 type createPrincipalRequest struct {
-	Name string `json:"name"`
+	Name string `json:"name" required:"true" example:"HTTP/www.example.com"`
 	// UserName links the principal to a directory account, so setting the account's password
 	// re-keys this principal too.
-	UserName string `json:"userName,omitempty"`
+	UserName string `json:"userName,omitempty" description:"Links the principal to an account, so setting that account's password re-keys this principal too."`
 
 	Enabled         *bool `json:"enabled,omitempty"`
 	RequiresPreAuth *bool `json:"requiresPreAuth,omitempty"`
@@ -34,14 +31,14 @@ type createPrincipalRequest struct {
 	// Aliases are further names this principal answers to.
 	Aliases []string `json:"aliases,omitempty"`
 
-	MaxTicketLife    string `json:"maxTicketLife,omitempty"`
-	MaxRenewableLife string `json:"maxRenewableLife,omitempty"`
+	MaxTicketLife    string `json:"maxTicketLife,omitempty" example:"10h" description:"Empty means the realm default."`
+	MaxRenewableLife string `json:"maxRenewableLife,omitempty" example:"168h" description:"Empty means the realm default."`
 
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 
 	// Password keys the principal from a password. Leave it out for a service principal and
 	// take a keytab instead: a random key cannot be guessed.
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty" format:"password" description:"Leave it out for a service principal and take a keytab instead: a random key cannot be guessed."`
 }
 
 type patchPrincipalRequest struct {
@@ -68,14 +65,14 @@ type patchPrincipalRequest struct {
 	ExpiresAt         *time.Time `json:"expiresAt,omitempty"`
 	PasswordExpiresAt *time.Time `json:"passwordExpiresAt,omitempty"`
 	// Unlock clears a lockout imposed by repeated failed pre-authentications.
-	Unlock *bool `json:"unlock,omitempty"`
+	Unlock *bool `json:"unlock,omitempty" description:"Clear a lockout imposed by repeated failed pre-authentications."`
 }
 
 type principalPasswordRequest struct {
 	// Password keys the principal from a password; leave it empty and set randomize to replace
 	// the keys with random ones.
-	Password  string `json:"password,omitempty"`
-	Randomize bool   `json:"randomize,omitempty"`
+	Password  string `json:"password,omitempty" format:"password"`
+	Randomize bool   `json:"randomize,omitempty" description:"Replace the keys with random ones instead."`
 }
 
 func (s *Server) handleListPrincipals(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +83,7 @@ func (s *Server) handleListPrincipals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"principals": principals})
+	writeJSON(w, http.StatusOK, principalsBody{Principals: principals})
 }
 
 // handlePrincipalGet answers both the principal itself and, on the .keytab suffix, a keytab file
@@ -113,14 +110,16 @@ func (s *Server) handlePrincipalGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"principal":        p,
-		"encTypes":         encTypeNames(p.EncTypes()),
-		"maxTicketLife":    durationString(p.MaxTicketLife),
-		"maxRenewableLife": durationString(p.MaxRenewableLife),
-		// The same policy as MIT and FreeIPA record it in krbTicketFlags, so a value read
-		// here can be compared with one read from either.
-		"krbTicketFlags": p.TicketFlags(),
+	// The policy is repeated as the krbTicketFlags bitmask MIT and FreeIPA record, so a value
+	// read here can be compared with one read from either.
+	flags := p.TicketFlags()
+
+	writeJSON(w, http.StatusOK, principalBody{
+		Principal:        p,
+		EncTypes:         encTypeNames(p.EncTypes()),
+		MaxTicketLife:    durationString(p.MaxTicketLife),
+		MaxRenewableLife: durationString(p.MaxRenewableLife),
+		KrbTicketFlags:   &flags,
 	})
 }
 
@@ -197,7 +196,7 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info().Str("principal", p.FullName()).Msg("principal created")
-	writeJSON(w, http.StatusCreated, map[string]any{"principal": p})
+	writeJSON(w, http.StatusCreated, principalBody{Principal: p})
 }
 
 // handlePrincipalPost carries the actions on an existing principal. Only the password action is
@@ -290,7 +289,7 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info().Str("principal", updated.FullName()).Msg("principal updated")
-	writeJSON(w, http.StatusOK, map[string]any{"principal": updated})
+	writeJSON(w, http.StatusOK, principalBody{Principal: updated})
 }
 
 func (s *Server) handleDeletePrincipal(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +355,7 @@ func (s *Server) setPrincipalPassword(w http.ResponseWriter, r *http.Request, ra
 
 	s.log.Info().Str("principal", p.FullName()).Bool("random", req.Randomize).Int("kvno", p.KVNO).
 		Msg("principal re-keyed")
-	writeJSON(w, http.StatusOK, map[string]any{"principal": p})
+	writeJSON(w, http.StatusOK, principalBody{Principal: p})
 }
 
 // writeKeytab returns a keytab file holding the principal's current keys.

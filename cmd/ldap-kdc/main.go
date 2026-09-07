@@ -264,6 +264,7 @@ func run(cfg *config.Config) error {
 			Realm:             cfg.Server.Realm,
 			EncTypes:          encTypes,
 			Token:             cfg.API.Token,
+			Docs:              cfg.API.Docs,
 			MinPasswordLength: cfg.KPasswd.MinPasswordLength,
 			DNSZones:          servedZones(cfg),
 			DNSDefaultTTL:     int(cfg.DNS.TTL / time.Second),

@@ -42,6 +42,9 @@ type Group struct {
 	Description   string       `yaml:"description"`
 	IncludeGroups []int        `yaml:"include_groups"`
 	Capabilities  []Capability `yaml:"capabilities"`
+
+	// CustomAttrs are published on the group's LDAP entry as they are given.
+	CustomAttrs map[string][]string `yaml:"custom_attributes"`
 }
 
 // User is a directory account to create, with the Kerberos principal that goes with it.
@@ -201,6 +204,10 @@ func (p *Plan) Validate(opts Options) error {
 			return fmt.Errorf("groups[%d]: %s appears twice", i, g.Name)
 		}
 		seenGroups[strings.ToLower(g.Name)] = true
+
+		if err := store.ValidateCustomAttrs(g.CustomAttrs); err != nil {
+			return fmt.Errorf("groups[%d]: %s: %w", i, g.Name, err)
+		}
 	}
 
 	seenUsers := make(map[string]bool, len(p.Users))
@@ -228,6 +235,10 @@ func (p *Plan) Validate(opts Options) error {
 
 		if err := names.claim(u.Name, u.Aliases, u.Name); err != nil {
 			return fmt.Errorf("users[%d]: %w", i, err)
+		}
+
+		if err := store.ValidateCustomAttrs(u.CustomAttrs); err != nil {
+			return fmt.Errorf("users[%d]: %s: %w", i, u.Name, err)
 		}
 	}
 
@@ -383,6 +394,7 @@ func applyGroup(ctx context.Context, st *store.Store, g Group) (bool, error) {
 		Description:   g.Description,
 		IncludeGroups: g.IncludeGroups,
 		Capabilities:  capabilities(g.Capabilities),
+		CustomAttrs:   g.CustomAttrs,
 	})
 }
 

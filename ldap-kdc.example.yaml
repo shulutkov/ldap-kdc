@@ -157,6 +157,11 @@ api:
   # token: ""
   # token_file: /etc/ldap-kdc/api.token
 
+  # Serve the OpenAPI document at /api/openapi.json and Swagger UI at /api/docs. Both sit outside
+  # the token check, because a browser cannot put a header on the address bar; turn this off where
+  # the management port is reachable more widely than its administrators.
+  docs: true
+
 # A directory described in advance, applied on start-up. Meant for continuous integration, test
 # stands and development containers; see bootstrap.example.yaml. Leave the path empty in production
 # and provision through the API instead.

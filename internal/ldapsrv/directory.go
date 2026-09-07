@@ -184,16 +184,30 @@ func (b *entryBuilder) accountEntry(
 		attrs = append(attrs, &ldap.EntryAttribute{Name: b.cfg.SSHKeyAttr, Values: u.SSHKeys})
 	}
 
-	names := make([]string, 0, len(u.CustomAttrs))
-	for k := range u.CustomAttrs {
+	attrs = append(attrs, customAttributes(u.CustomAttrs)...)
+
+	return &ldap.Entry{DN: b.UserDN(u, primary), Attributes: attrs}
+}
+
+// customAttributes renders an object's custom attributes in name order, so two searches of the
+// same entry return them the same way round.
+//
+// They are published exactly as they were stored. The directory has no opinion about what they
+// mean -- that an account heads a department, that a group owns a cost centre -- which is what
+// makes them useful to whatever reads this directory to decide something.
+func customAttributes(attrs map[string][]string) []*ldap.EntryAttribute {
+	names := make([]string, 0, len(attrs))
+	for k := range attrs {
 		names = append(names, k)
 	}
 	sort.Strings(names)
+
+	out := make([]*ldap.EntryAttribute, 0, len(names))
 	for _, k := range names {
-		attrs = append(attrs, &ldap.EntryAttribute{Name: k, Values: u.CustomAttrs[k]})
+		out = append(out, &ldap.EntryAttribute{Name: k, Values: attrs[k]})
 	}
 
-	return &ldap.Entry{DN: b.UserDN(u, primary), Attributes: attrs}
+	return out
 }
 
 // kerberosAttributes publishes the principal's state under the attribute names MIT's LDAP backend
@@ -325,6 +339,7 @@ func (b *entryBuilder) PosixGroups(ctx context.Context, hierarchy string) ([]*ld
 		}
 
 		attrs = append(attrs, &ldap.EntryAttribute{Name: "objectClass", Values: classes})
+		attrs = append(attrs, customAttributes(g.CustomAttrs)...)
 
 		dn := fmt.Sprintf("%s=%s,%s,%s", b.cfg.GroupFormat, g.Name, hierarchy, b.cfg.BaseDN)
 		entries = append(entries, &ldap.Entry{DN: dn, Attributes: attrs})

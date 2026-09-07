@@ -50,10 +50,15 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	if err != nil {
 		return nil, err
 	}
+	attrs, err := s.loadAttrs(ctx, s.db, "group", ids)
+	if err != nil {
+		return nil, err
+	}
 
 	for i := range groups {
 		groups[i].IncludeGroups = includes[groups[i].ID]
 		groups[i].Capabilities = caps[groups[i].ID]
+		groups[i].CustomAttrs = attrs[groups[i].ID]
 	}
 
 	return groups, nil
@@ -98,9 +103,14 @@ func (s *Store) getGroup(ctx context.Context, q querier, where string, arg any) 
 	if err != nil {
 		return nil, err
 	}
+	attrs, err := s.loadAttrs(ctx, q, "group", []int64{g.ID})
+	if err != nil {
+		return nil, err
+	}
 
 	g.IncludeGroups = includes[g.ID]
 	g.Capabilities = caps[g.ID]
+	g.CustomAttrs = attrs[g.ID]
 
 	return &g, nil
 }
@@ -139,6 +149,10 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 		}
 
 		if err := s.replaceIncludes(ctx, tx, g.ID, g.IncludeGroups); err != nil {
+			return err
+		}
+
+		if err := s.replaceAttrs(ctx, tx, "group", g.ID, g.CustomAttrs); err != nil {
 			return err
 		}
 
@@ -181,6 +195,9 @@ func (s *Store) UpdateGroup(ctx context.Context, name string, mutate func(*Group
 		if err := s.replaceIncludes(ctx, tx, g.ID, g.IncludeGroups); err != nil {
 			return err
 		}
+		if err := s.replaceAttrs(ctx, tx, "group", g.ID, g.CustomAttrs); err != nil {
+			return err
+		}
 		if err := s.replaceCapabilities(ctx, tx, "group", g.ID, g.Capabilities); err != nil {
 			return err
 		}
@@ -220,6 +237,9 @@ func (s *Store) DeleteGroup(ctx context.Context, name string) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM capabilities WHERE owner_kind = 'group' AND owner_id = ?`, g.ID); err != nil {
+			return err
+		}
+		if err := deleteAttrs(ctx, tx, "group", g.ID); err != nil {
 			return err
 		}
 

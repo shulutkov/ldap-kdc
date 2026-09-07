@@ -199,6 +199,12 @@ type API struct {
 
 	// TokenFile reads Token from a file, so the secret need not sit in the configuration.
 	TokenFile string `yaml:"token_file" env:"TOKEN_FILE"`
+
+	// Docs serves the OpenAPI document at /api/openapi.json and Swagger UI at /api/docs. Both
+	// sit outside the token check, because a browser cannot put a header on the address bar;
+	// turn it off on a service whose management port is reachable more widely than its
+	// administrators.
+	Docs bool `yaml:"docs" env:"DOCS" envDefault:"true"`
 }
 
 // Behaviors carries the policy knobs that bound password guessing and directory reads.

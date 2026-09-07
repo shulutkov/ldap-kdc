@@ -19,8 +19,8 @@ import (
 // Capability grants an account the right to perform an action on an object, following glauth's
 // model: action is typically "search" and object an LDAP subtree or "*".
 type Capability struct {
-	Action string `json:"action"`
-	Object string `json:"object"`
+	Action string `json:"action" example:"search"`
+	Object string `json:"object" example:"dc=example,dc=com"`
 }
 
 // AppPassword is an additional password that authenticates a single application. Revoking one does
@@ -48,7 +48,7 @@ type User struct {
 	Homedir      string              `json:"homeDirectory,omitempty"`
 	Disabled     bool                `json:"disabled"`
 	SSHKeys      []string            `json:"sshKeys,omitempty"`
-	CustomAttrs  map[string][]string `json:"customAttributes,omitempty"`
+	CustomAttrs  map[string][]string `json:"customAttributes,omitempty" description:"Attributes the directory has no opinion about, published on the LDAP entry as given."`
 	Capabilities []Capability        `json:"capabilities,omitempty"`
 	AppPasswords []AppPassword       `json:"appPasswords,omitempty"`
 	CreatedAt    time.Time           `json:"createdAt"`
@@ -59,8 +59,8 @@ type User struct {
 	OTPSecret  string `json:"-"`
 
 	// HasOTP and HasPassword report credential state without revealing it.
-	HasOTP      bool `json:"hasOTP"`
-	HasPassword bool `json:"hasPassword"`
+	HasOTP      bool `json:"hasOTP" description:"Whether a one-time password secret is set. It applies to LDAP binds only."`
+	HasPassword bool `json:"hasPassword" description:"An account without one can neither bind nor obtain a ticket."`
 }
 
 // Group is a POSIX group. Groups may include other groups, and membership is resolved
@@ -70,19 +70,22 @@ type Group struct {
 	Name          string       `json:"name"`
 	GIDNumber     int          `json:"gidNumber"`
 	Description   string       `json:"description,omitempty"`
-	IncludeGroups []int        `json:"includeGroups,omitempty"`
+	IncludeGroups []int        `json:"includeGroups,omitempty" description:"Groups whose members count as members of this one."`
 	Capabilities  []Capability `json:"capabilities,omitempty"`
-	CreatedAt     time.Time    `json:"createdAt"`
-	UpdatedAt     time.Time    `json:"updatedAt"`
+	// CustomAttrs are attributes the directory itself has no opinion about, published on the
+	// group's LDAP entry as they are given.
+	CustomAttrs map[string][]string `json:"customAttributes,omitempty" description:"Attributes the directory has no opinion about, published on the LDAP entry as given."`
+	CreatedAt   time.Time           `json:"createdAt"`
+	UpdatedAt   time.Time           `json:"updatedAt"`
 }
 
 // Principal is a Kerberos identity. A principal with UserID set is the Kerberos face of that
 // directory user; one without is a service principal or krbtgt.
 type Principal struct {
 	ID     int64  `json:"id"`
-	Name   string `json:"name"`
-	Realm  string `json:"realm"`
-	UserID *int64 `json:"userId,omitempty"`
+	Name   string `json:"name" example:"HTTP/www.example.com"`
+	Realm  string `json:"realm" example:"EXAMPLE.COM"`
+	UserID *int64 `json:"userId,omitempty" description:"Set when the principal is the Kerberos face of a directory account."`
 	// UserName is filled in on read for convenience and ignored on write.
 	UserName string `json:"userName,omitempty"`
 
@@ -90,7 +93,7 @@ type Principal struct {
 	Enabled bool `json:"enabled"`
 	// RequiresPreAuth demands PA-ENC-TIMESTAMP in the AS exchange. Clearing it re-opens offline
 	// AS-REP cracking against this principal's password.
-	RequiresPreAuth bool `json:"requiresPreAuth"`
+	RequiresPreAuth bool `json:"requiresPreAuth" description:"Clearing it re-opens offline AS-REP cracking against this principal's password."`
 
 	AllowForwardable bool `json:"allowForwardable"`
 	AllowProxiable   bool `json:"allowProxiable"`
@@ -102,19 +105,19 @@ type Principal struct {
 	// calls TrustedToAuthForDelegation. Protocol transition itself is open to any service, but
 	// only one carrying this flag receives a forwardable ticket, and only a forwardable ticket
 	// can go on to be delegated.
-	OKToAuthAsDelegate bool `json:"okToAuthAsDelegate"`
+	OKToAuthAsDelegate bool `json:"okToAuthAsDelegate" description:"MIT's OK_TO_AUTH_AS_DELEGATE: only a service carrying it receives a forwardable S4U2Self ticket."`
 	// AllowedToDelegateTo lists the services this one may forward a user's identity to via
 	// S4U2Proxy. An empty list disables constrained delegation for the principal.
-	AllowedToDelegateTo []string `json:"allowedToDelegateTo,omitempty"`
+	AllowedToDelegateTo []string `json:"allowedToDelegateTo,omitempty" description:"The services this one may forward a user's identity to. Empty disables constrained delegation."`
 	// Aliases are further names this principal answers to, spelled without the realm as Name
 	// is. FreeIPA holds the same relationship as a multivalued krbPrincipalName with
 	// krbCanonicalName naming the real one.
-	Aliases []string `json:"aliases,omitempty"`
+	Aliases []string `json:"aliases,omitempty" description:"Further names this principal answers to, spelled without the realm."`
 
 	// AllowedToImpersonate narrows which principals may be impersonated, matching FreeIPA's
 	// ipaAllowToImpersonate. An empty list means any principal, as a missing attribute does
 	// there.
-	AllowedToImpersonate []string `json:"allowedToImpersonate,omitempty"`
+	AllowedToImpersonate []string `json:"allowedToImpersonate,omitempty" description:"FreeIPA's ipaAllowToImpersonate. An empty list means any principal."`
 
 	// MaxTicketLife and MaxRenewableLife of zero mean "use the realm default".
 	MaxTicketLife    time.Duration `json:"-"`
@@ -232,6 +235,12 @@ const (
 	TrustBidirectional TrustDirection = "bidirectional"
 )
 
+// Enum lists the directions a trust can have, which is what lets a generated client and the
+// published document say which strings are legal instead of leaving a reader to find out.
+func (d TrustDirection) Enum() []any {
+	return []any{string(TrustOutbound), string(TrustInbound), string(TrustBidirectional)}
+}
+
 // Trust is a cross-realm relationship. The shared keys live in ordinary principals:
 // krbtgt/REMOTE@LOCAL for the outbound direction, krbtgt/LOCAL@REMOTE for the inbound one.
 type Trust struct {
@@ -240,7 +249,7 @@ type Trust struct {
 	Direction   TrustDirection `json:"direction"`
 	// Transitive allows this realm to be used as a waypoint towards realms beyond the remote
 	// one; it is recorded in the transited field of issued tickets.
-	Transitive bool      `json:"transitive"`
+	Transitive bool      `json:"transitive" description:"Allows this realm to be a waypoint towards realms beyond the remote one."`
 	Enabled    bool      `json:"enabled"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`

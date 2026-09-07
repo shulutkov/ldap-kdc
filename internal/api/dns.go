@@ -11,13 +11,13 @@ import (
 
 // createDNSRecordRequest adds one resource record to the realm's zone.
 type createDNSRecordRequest struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name string `json:"name" required:"true" example:"www.example.com"`
+	Type string `json:"type" required:"true" example:"A"`
 	// Value is the record data in the form a zone file would use: "192.0.2.10" for an A record,
 	// "0 100 88 kdc.example.com." for an SRV.
-	Value string `json:"value"`
+	Value string `json:"value" required:"true" example:"192.0.2.10" description:"The record data as a zone file would write it."`
 	// TTL defaults to the zone's when omitted.
-	TTL int `json:"ttl,omitempty"`
+	TTL int `json:"ttl,omitempty" description:"Defaults to the zone's."`
 }
 
 func (s *Server) handleListDNSRecords(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +36,7 @@ func (s *Server) handleListDNSRecords(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"records": records, "zones": s.cfg.DNSZones})
+	writeJSON(w, http.StatusOK, dnsRecordsBody{Records: records, Zones: s.cfg.DNSZones})
 }
 
 func (s *Server) handleCreateDNSRecord(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +80,7 @@ func (s *Server) handleCreateDNSRecord(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info().Str("name", record.Name).Str("type", record.Type).Str("value", record.Value).
 		Msg("DNS record created")
-	writeJSON(w, http.StatusCreated, map[string]any{"record": record})
+	writeJSON(w, http.StatusCreated, dnsRecordBody{Record: &record})
 }
 
 func (s *Server) handleDeleteDNSRecord(w http.ResponseWriter, r *http.Request) {

@@ -11,9 +11,9 @@ import (
 
 // createUserRequest is the body of a user creation.
 type createUserRequest struct {
-	Name         string              `json:"name"`
-	UIDNumber    int                 `json:"uidNumber"`
-	PrimaryGroup int                 `json:"primaryGroup"`
+	Name         string              `json:"name" required:"true" example:"alice"`
+	UIDNumber    int                 `json:"uidNumber" description:"Allocated automatically when left out."`
+	PrimaryGroup int                 `json:"primaryGroup" description:"The gid number of the account's primary group."`
 	OtherGroups  []int               `json:"otherGroups,omitempty"`
 	GivenName    string              `json:"givenName,omitempty"`
 	SN           string              `json:"sn,omitempty"`
@@ -27,13 +27,13 @@ type createUserRequest struct {
 	OTPSecret    string              `json:"otpSecret,omitempty"`
 
 	// Password sets the account's credentials on both sides at creation time.
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty" format:"password" description:"Sets both credential forms at once: the LDAP digest and the Kerberos keys."`
 	// ForceChange marks the password expired so the account has to choose its own at first
 	// login. It defaults to true, because a password an administrator typed is one the
 	// administrator knows.
-	ForceChange *bool `json:"forceChange,omitempty"`
+	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password so its owner chooses their own at first login. Defaults to true."`
 	// Aliases are further Kerberos names the account answers to.
-	Aliases []string `json:"aliases,omitempty"`
+	Aliases []string `json:"aliases,omitempty" description:"Further Kerberos names the account answers to."`
 }
 
 // patchUserRequest carries only the fields being changed; anything absent is left alone.
@@ -55,14 +55,14 @@ type patchUserRequest struct {
 
 // setPasswordRequest sets an account's password.
 type setPasswordRequest struct {
-	Password string `json:"password"`
+	Password string `json:"password" required:"true" format:"password"`
 	// ExpiresAt, when set, is when the password must next be changed. It overrides ForceChange.
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty" description:"When the password must next be changed. Overrides forceChange."`
 	// ForceChange marks the password expired immediately, so the account must replace it at the
 	// next login. It defaults to true: a password set through this interface is one an
 	// administrator chose and therefore knows, and FreeIPA expires an administrative reset for
 	// the same reason.
-	ForceChange *bool `json:"forceChange,omitempty"`
+	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password immediately. Defaults to true."`
 }
 
 // passwordExpiry works out when a password set through this interface should expire.
@@ -88,7 +88,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+	writeJSON(w, http.StatusOK, usersBody{Users: users})
 }
 
 func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +106,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "principals": principals})
+	writeJSON(w, http.StatusOK, userBody{User: u, Principals: principals})
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +155,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info().Str("user", u.Name).Msg("user created")
-	writeJSON(w, http.StatusCreated, map[string]any{"user": created})
+	writeJSON(w, http.StatusCreated, userBody{User: created})
 }
 
 func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +198,7 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info().Str("user", updated.Name).Msg("user updated")
-	writeJSON(w, http.StatusOK, map[string]any{"user": updated})
+	writeJSON(w, http.StatusOK, userBody{User: updated})
 }
 
 // syncPrincipalEnabled mirrors an account's disabled flag onto its principals.
@@ -258,17 +258,14 @@ func (s *Server) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 	mustChange := expiry != nil && !expiry.After(timeNow())
 
 	s.log.Info().Str("user", name).Bool("mustChange", mustChange).Msg("password set")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     "password set",
-		"mustChange": mustChange,
-	})
+	writeJSON(w, http.StatusOK, passwordSetBody{Status: "password set", MustChange: mustChange})
 }
 
 // appPasswordRequest names a new application password.
 type appPasswordRequest struct {
-	Name string `json:"name"`
+	Name string `json:"name" required:"true" example:"backup-agent"`
 	// Password is optional; one is generated when it is omitted, which is the usual case.
-	Password string `json:"password,omitempty"`
+	Password string `json:"password,omitempty" format:"password" description:"One is generated when this is left out, which is the usual case."`
 }
 
 func (s *Server) handleListAppPasswords(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +276,7 @@ func (s *Server) handleListAppPasswords(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"appPasswords": u.AppPasswords})
+	writeJSON(w, http.StatusOK, appPasswordsBody{AppPasswords: u.AppPasswords})
 }
 
 func (s *Server) handleCreateAppPassword(w http.ResponseWriter, r *http.Request) {
@@ -324,10 +321,10 @@ func (s *Server) handleCreateAppPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	body := map[string]any{"appPassword": ap}
+	body := appPasswordBody{AppPassword: ap}
 	if generated {
 		// The generated secret is shown once, here, because nothing stores it in the clear.
-		body["password"] = password
+		body.Password = password
 	}
 
 	s.log.Info().Str("user", name).Str("appPassword", req.Name).Msg("application password created")

@@ -127,6 +127,20 @@ Everything under `/api/` requires `Authorization: Bearer <token>` when `api.toke
 `/healthz`, `/readyz` and `/metrics` are always open, so a scraper does not need a credential that
 can change passwords.
 
+The API describes itself. `/api/openapi.json` is an OpenAPI document **generated from the code** --
+the route table and the Go types the handlers decode and encode -- when the service starts, so it
+cannot drift from what the service does and there is no generator to run before a build. `/api/docs`
+renders it with Swagger UI, embedded in the binary: it works in an air-gapped network, matches the
+build it ships with, and costs the browser no third party. Both sit outside the token check, because
+a browser cannot put a header on the address bar; the endpoints they describe do not, and Swagger
+UI's **Authorize** button is where the token goes. Set `api.docs: false` where the management port is
+reachable more widely than its administrators.
+
+The prose in the document comes from the route table and from `description` tags on the fields
+themselves, next to what they describe. Adding an endpoint means adding its row to that table --
+handler, pattern and documentation together -- which is also what makes an undocumented route
+impossible to add by accident.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/stats` | realm summary: counts, enctypes, accounts without a password |
@@ -136,7 +150,7 @@ can change passwords.
 | GET POST | `/api/v1/users/{name}/app-passwords` | list, mint (the secret is returned once) |
 | DELETE | `/api/v1/users/{name}/app-passwords/{id}` | revoke one |
 | GET POST | `/api/v1/groups` | list, create |
-| GET PATCH DELETE | `/api/v1/groups/{name}` | read, edit, remove |
+| GET PATCH DELETE | `/api/v1/groups/{name}` | read, edit, remove (incl. `customAttributes`) |
 | GET | `/api/v1/groups/{name}/members` | resolved membership, following included groups |
 | GET POST | `/api/v1/principals` | list, create |
 | GET PATCH DELETE | `/api/v1/principals/{name}` | read, edit policy and `aliases`, remove |
@@ -164,6 +178,34 @@ whatever was asked for, unless the request carries the CANONICALIZE option -- `k
 as RFC 6806 requires. LDAP publishes every name as `krbPrincipalName` and the real one as
 `krbCanonicalName`. A name can belong to one principal only, canonically or as an alias, and the
 attempt to hand it to a second is refused rather than resolved by query order.
+
+### Custom attributes
+
+Users and groups carry attributes the service itself has no opinion about, published on the LDAP
+entry exactly as they were given:
+
+```sh
+curl -s -X PATCH $API/users/alice -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "customAttributes": {"departmentHead": ["engineering"], "clearance": ["secret"]}
+}'
+```
+
+They are ordinary attributes once published, so a system that decides something about an account
+asks the directory rather than keeping a table of its own:
+
+```sh
+ldapsearch ... "(&(objectClass=posixAccount)(departmentHead=engineering))"
+```
+
+`customAttributes` replaces the whole set, so a name left out of the object is removed. The same
+field exists on groups, in the bootstrap plan as `custom_attributes`, and over LDAP: an attribute
+name the schema does not define is stored as a custom one by an ordinary modify.
+
+What cannot be set this way is any attribute the directory builds itself -- `memberOf`,
+`objectClass`, `uidNumber`, the `krb*` set and the rest. Those are refused with a 400 over REST and
+a constraint violation over LDAP. The reason is not tidiness: an entry carrying two `memberOf`
+attributes, one of them written by the account it belongs to, is exactly what an authorization
+rule reading this directory must never see.
 
 ### Cross-realm trust
 
@@ -364,8 +406,11 @@ signing, zone transfers to secondaries, per-server DNS locations, and dynamic up
 **Deliberately different.** The tree keeps glauth's layout -- `cn=user,ou=group,ou=users,$BASE` --
 rather than FreeIPA's `uid=user,cn=users,cn=accounts,$SUFFIX`, so existing glauth configuration
 keeps working; moving it is a decision for whoever deploys this, not one to make silently.
-Administration is the REST API rather than the kadmin RPC protocol. Service principals live in the
-Kerberos store and are not published as LDAP entries.
+Administration is the REST API rather than the kadmin RPC protocol, and it describes itself through
+an embedded OpenAPI document. Service principals live in the Kerberos store and are not published
+as LDAP entries. Attributes outside the schema follow glauth: any name is accepted and published as
+given, where FreeIPA would have the attribute defined in the schema first. The names the directory
+builds itself are the exception and cannot be taken.
 
 **Not implemented.** Password history, character-class rules and minimum or maximum password age;
 per-group password policies with priority. PKINIT, FAST and Kerberos-side OTP -- the one-time
@@ -404,7 +449,7 @@ internal/krbkeys  principal names, salts, string-to-key, keytab encoding
 internal/kdc      AS and TGS exchanges, PAC, S4U, cross-realm, replay cache
 internal/kpasswd  RFC 3244 password changing
 internal/ldapsrv  LDAP handler, entry construction, failed-bind throttling
-internal/api      REST management interface
+internal/api      REST management interface, OpenAPI document, embedded Swagger UI
 internal/secret   master key handling and AEAD sealing
 ```
 

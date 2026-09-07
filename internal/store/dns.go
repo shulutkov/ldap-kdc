@@ -14,10 +14,10 @@ import (
 // presentation form a zone file would use.
 type DNSRecord struct {
 	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
+	Name      string    `json:"name" example:"www.example.com"`
+	Type      string    `json:"type" example:"A"`
 	TTL       int       `json:"ttl"`
-	Value     string    `json:"value"`
+	Value     string    `json:"value" example:"192.0.2.10"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

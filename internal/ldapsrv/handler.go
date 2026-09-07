@@ -451,6 +451,19 @@ func (h *Handler) Modify(boundDN string, req ldap.ModifyRequest, conn net.Conn) 
 			return ldap.LDAPResultNoSuchObject, nil
 		}
 
+		// A name the directory builds for itself is refused rather than stored: an entry
+		// carrying two memberOf attributes, one of them written by its own owner, is exactly
+		// what an authorization rule reading this directory must never see. The error is
+		// logged here and not returned, because the library answers any returned error with
+		// an operations error and throws the result code away.
+		if errors.Is(err, store.ErrInvalidAttribute) {
+			h.log.Info().Err(err).Str("user", name).Str("by", boundDN).
+				Msg("modify refused: the attribute is built by the directory")
+			h.result("modify", "invalid-attribute")
+
+			return ldap.LDAPResultConstraintViolation, nil
+		}
+
 		h.log.Error().Err(err).Str("user", name).Msg("could not modify user")
 		h.result("modify", "error")
 

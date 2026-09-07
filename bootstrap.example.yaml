@@ -24,6 +24,10 @@ groups:
 
   - name: staff
     gid_number: 5001
+    # Attributes the directory has no opinion about, published on the group's LDAP entry as
+    # given. A policy engine elsewhere can filter on them like any other attribute.
+    custom_attributes:
+      costCentre: ["CC-42"]
 
 users:
   - name: admin
@@ -40,6 +44,8 @@ users:
   - name: alice
     primary_group: 5001
     password: another long enough password
+    custom_attributes:
+      departmentHead: ["staff"]
     # Further names the account answers to. Both reach the same keys; a client that asks for
     # canonicalization is told the real name in the reply.
     aliases:

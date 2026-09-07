@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -28,6 +29,7 @@ const (
 
 type harness struct {
 	store  *store.Store
+	server *Server
 	base   string
 	etypes []int32
 }
@@ -69,7 +71,7 @@ func newHarness(t *testing.T) *harness {
 
 	srv, err := New(Config{
 		Listen: "127.0.0.1:0", Realm: testRealm, EncTypes: etypes,
-		Token: testToken, MinPasswordLength: 8,
+		Token: testToken, MinPasswordLength: 8, Docs: true,
 	}, st, log, metrics.New())
 	if err != nil {
 		t.Fatalf("api: %v", err)
@@ -83,7 +85,49 @@ func newHarness(t *testing.T) *harness {
 		_ = srv.Shutdown(c)
 	})
 
-	return &harness{store: st, base: "http://" + srv.Addr().String(), etypes: etypes}
+	return &harness{store: st, server: srv, base: "http://" + srv.Addr().String(), etypes: etypes}
+}
+
+// asset fetches a documentation file with a chosen content coding, decompressing the answer
+// itself. The default transport would add gzip and unwrap it silently, which is exactly the
+// behaviour this has to tell apart.
+func (h *harness) asset(t *testing.T, path, encoding string) ([]byte, http.Header) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, h.base+path, nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", encoding)
+
+	res, err := (&http.Client{Transport: &http.Transport{DisableCompression: true}}).Do(req)
+	if err != nil {
+		t.Fatalf("get %s: %v", path, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("%s: status = %d", path, res.StatusCode)
+	}
+
+	if res.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("%s is not gzip: %v", path, err)
+		}
+		defer func() { _ = zr.Close() }()
+
+		if body, err = io.ReadAll(zr); err != nil {
+			t.Fatalf("decompressing %s: %v", path, err)
+		}
+	}
+
+	return body, res.Header
 }
 
 // do sends an authenticated request and returns the status and decoded body.
@@ -261,6 +305,214 @@ func TestAliasesAreCreatedAndReplacedThroughTheAPI(t *testing.T) {
 	if _, err := h.store.GetPrincipal(ctx, krbkeys.MustParseName("HTTP/intranet.example.com", testRealm)); err != nil {
 		t.Errorf("the new alias does not resolve: %v", err)
 	}
+}
+
+func TestCustomAttributesOnGroupsAndUsers(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	status, body := h.do(t, "POST", "/api/v1/groups", map[string]any{
+		"name": "engineering", "gidNumber": 5000,
+		"customAttributes": map[string][]string{"costCentre": {"CC-42"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating group: status = %d, body = %v", status, body)
+	}
+
+	h.do(t, "POST", "/api/v1/users", map[string]any{
+		"name": "alice", "uidNumber": 10000, "primaryGroup": 5000,
+		"customAttributes": map[string][]string{"departmentHead": {"engineering"}},
+	})
+
+	u, err := h.store.GetUser(ctx, "alice")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if v := u.CustomAttrs["departmentHead"]; len(v) != 1 || v[0] != "engineering" {
+		t.Errorf("user attributes = %v", u.CustomAttrs)
+	}
+
+	// PATCH replaces the set, the way the other list-shaped fields behave.
+	if status, body := h.do(t, "PATCH", "/api/v1/groups/engineering", map[string]any{
+		"customAttributes": map[string][]string{"owner": {"alice"}},
+	}); status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+
+	g, err := h.store.GetGroup(ctx, "engineering")
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if _, ok := g.CustomAttrs["costCentre"]; ok {
+		t.Errorf("a replaced attribute survived: %v", g.CustomAttrs)
+	}
+
+	// A name the directory builds itself is a bad request, not a server error: the caller can
+	// fix it, and nothing about the service went wrong.
+	status, body = h.do(t, "POST", "/api/v1/groups", map[string]any{
+		"name": "forged", "gidNumber": 5001,
+		"customAttributes": map[string][]string{"objectClass": {"top"}},
+	})
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400, body = %v", status, body)
+	}
+}
+
+func TestTheDocumentationIsServed(t *testing.T) {
+	h := newHarness(t)
+
+	// The page and the document sit outside the token check: a browser cannot put an
+	// Authorization header on the address bar, so a documentation page behind the token would be
+	// unreachable by the only client that can use it.
+	status, page := h.raw(t, "GET", "/api/docs/", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("the documentation page: status = %d", status)
+	}
+	for _, want := range []string{"swagger-ui-bundle.js", "swagger-ui.css", "../openapi.json"} {
+		if !strings.Contains(string(page), want) {
+			t.Errorf("the page does not load %s", want)
+		}
+	}
+
+	// Swagger UI is embedded rather than fetched from a CDN, so the assets it names must be
+	// served by this binary too. They are stored compressed, which the browser asks for; a client
+	// that does not has to be given the decompressed bytes rather than a blob it cannot read.
+	for _, asset := range []struct{ name, contains string }{
+		{"swagger-ui-bundle.js", "SwaggerUIBundle"},
+		{"swagger-ui.css", ".swagger-ui"},
+	} {
+		for _, encoding := range []string{"gzip", "identity"} {
+			body, header := h.asset(t, "/api/docs/"+asset.name, encoding)
+
+			if got := header.Get("Content-Encoding"); encoding == "gzip" && got != "gzip" {
+				t.Errorf("%s: Content-Encoding = %q, want the stored gzip to be passed through", asset.name, got)
+			} else if encoding == "identity" && len(got) > 0 {
+				t.Errorf("%s: Content-Encoding = %q for a client that did not ask", asset.name, got)
+			}
+
+			if !strings.Contains(string(body), asset.contains) {
+				t.Errorf("%s with Accept-Encoding %s: %d bytes that do not look like the asset",
+					asset.name, encoding, len(body))
+			}
+		}
+	}
+
+	if status, raw := h.raw(t, "GET", "/api/openapi.json", nil, ""); status != http.StatusOK {
+		t.Errorf("the OpenAPI document: status = %d, body = %s", status, raw)
+	}
+}
+
+func TestTheGeneratedDocumentDescribesEveryRoute(t *testing.T) {
+	h := newHarness(t)
+
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal(h.server.spec, &doc); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+
+	// The document is generated from the route table, so the two cannot drift apart -- but a
+	// route whose entry carries no documentation would quietly be missing from it, and an
+	// endpoint nobody can find is not far from one that does not exist.
+	for _, r := range append(h.server.publicRoutes(), h.server.apiRoutes()...) {
+		method, pattern, _ := strings.Cut(r.pattern, " ")
+
+		if len(r.docs) == 0 {
+			t.Errorf("%s carries no documentation", r.pattern)
+
+			continue
+		}
+
+		for _, d := range r.docs {
+			path := documentedPath(pattern, d)
+
+			methods, ok := doc.Paths[path]
+			if !ok {
+				t.Errorf("%s is missing from the document", path)
+
+				continue
+			}
+			if _, ok := methods[strings.ToLower(method)]; !ok {
+				t.Errorf("%s %s is missing from the document", method, path)
+			}
+		}
+	}
+}
+
+func TestEveryReferenceInTheDocumentResolves(t *testing.T) {
+	h := newHarness(t)
+
+	var doc map[string]any
+	if err := json.Unmarshal(h.server.spec, &doc); err != nil {
+		t.Fatalf("the document does not parse: %v", err)
+	}
+
+	// A reference to a schema that is not there renders as an empty box in Swagger UI and as
+	// nothing at all in a generated client, which is the sort of mistake a reader blames on the
+	// service rather than on the document.
+	refs := collectRefs(doc)
+	if len(refs) == 0 {
+		t.Fatal("the document holds no schema references at all")
+	}
+
+	for _, ref := range refs {
+		if !resolves(doc, ref) {
+			t.Errorf("%s points at nothing", ref)
+		}
+	}
+}
+
+// collectRefs gathers every $ref in the document.
+func collectRefs(node any) []string {
+	switch n := node.(type) {
+	case map[string]any:
+		var out []string
+
+		for k, v := range n {
+			if k == "$ref" {
+				if ref, ok := v.(string); ok {
+					out = append(out, ref)
+				}
+
+				continue
+			}
+			out = append(out, collectRefs(v)...)
+		}
+
+		return out
+	case []any:
+		var out []string
+		for _, v := range n {
+			out = append(out, collectRefs(v)...)
+		}
+
+		return out
+	default:
+		return nil
+	}
+}
+
+// resolves follows a local JSON pointer through the document.
+func resolves(doc map[string]any, ref string) bool {
+	pointer, ok := strings.CutPrefix(ref, "#/")
+	if !ok {
+		return false
+	}
+
+	var current any = doc
+
+	for _, step := range strings.Split(pointer, "/") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		if current, ok = m[step]; !ok {
+			return false
+		}
+	}
+
+	return true
 }
 
 func TestPasswordPolicyIsEnforced(t *testing.T) {
