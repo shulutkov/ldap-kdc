@@ -157,6 +157,12 @@ api:
   # token: ""
   # token_file: /etc/ldap-kdc/api.token
 
+# A directory described in advance, applied on start-up. Meant for continuous integration, test
+# stands and development containers; see bootstrap.example.yaml. Leave the path empty in production
+# and provision through the API instead.
+bootstrap:
+  # file: /etc/ldap-kdc/bootstrap.yaml
+
 behaviors:
   # Skip the per-account search authorization entirely. Every authenticated account can then read
   # the whole tree.

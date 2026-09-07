@@ -15,20 +15,29 @@ import (
 // ErrNoPassword is returned when an account has no password set and one is required.
 var ErrNoPassword = errors.New("no password set")
 
-// bcryptCost is deliberately above the library default: a directory verifies a password once per
-// bind, so the extra milliseconds cost nothing operationally and roughly quadruple the work an
-// attacker must do per guess against a stolen hash.
-const bcryptCost = 12
+// DefaultPasswordHashCost is deliberately above the bcrypt library's own default: a directory
+// verifies a password once per bind, so the extra milliseconds cost nothing operationally and
+// roughly quadruple the work an attacker must do per guess against a stolen hash.
+const DefaultPasswordHashCost = 12
 
-// HashPassword returns the bcrypt digest used for LDAP simple binds.
+// HashPassword returns the bcrypt digest used for LDAP simple binds, at the default cost.
 func HashPassword(password string) (string, error) {
+	return hashPassword(password, DefaultPasswordHashCost)
+}
+
+// HashPassword hashes at whatever cost this store was opened with.
+func (s *Store) HashPassword(password string) (string, error) {
+	return hashPassword(password, s.hashCost)
+}
+
+func hashPassword(password string, cost int) (string, error) {
 	// bcrypt silently truncates at 72 bytes, so a longer passphrase would have its tail
 	// ignored and two different passphrases could collide. Reject rather than truncate.
 	if len(password) > 72 {
 		return "", fmt.Errorf("password must not exceed 72 bytes")
 	}
 
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	h, err := bcrypt.GenerateFromPassword([]byte(password), cost)
 	if err != nil {
 		return "", err
 	}
@@ -50,7 +59,7 @@ func CheckPassword(hash, password string) bool {
 // user. Doing it in one transaction is what keeps the two from drifting apart, which would show up
 // as an account that can bind but cannot get a ticket, or the reverse.
 func (s *Store) SetUserPassword(ctx context.Context, userName, password string, etypes []int32, expiresAt *time.Time) error {
-	hash, err := HashPassword(password)
+	hash, err := s.HashPassword(password)
 	if err != nil {
 		return err
 	}
@@ -102,12 +111,20 @@ func (s *Store) SetUserPassword(ctx context.Context, userName, password string, 
 // SetPrincipalPassword derives fresh keys for one principal from a password. Service principals
 // that are provisioned with a keytab use RandomizePrincipalKeys instead.
 func (s *Store) SetPrincipalPassword(ctx context.Context, name krbkeys.Name, password string, etypes []int32) (*Principal, error) {
-	keys, err := krbkeys.DeriveKeys(password, name, etypes)
+	// The salt follows the principal's canonical name, as MIT's does, so a password set through
+	// an alias produces the same keys as one set through the real name. Salting with whichever
+	// name the caller happened to use would strand the account the moment that name changed.
+	p, err := s.GetPrincipal(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.SetKeys(ctx, name, keys, time.Now().UTC())
+	keys, err := krbkeys.DeriveKeys(password, p.KrbName(), etypes)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.SetKeys(ctx, p.KrbName(), keys, time.Now().UTC())
 }
 
 // RandomizePrincipalKeys replaces a principal's keys with random ones. There is no password to

@@ -176,6 +176,16 @@ type DNS struct {
 	TTL time.Duration `yaml:"ttl" env:"TTL" envDefault:"1h"`
 }
 
+// Bootstrap points at a plan describing the directory a fresh realm should come up with.
+//
+// It is meant for the cases where nobody is present to provision the service: a continuous
+// integration job, a test stand, a development container. Applying a plan creates what is missing
+// and leaves alone what is already there, so a restart is not a reset.
+type Bootstrap struct {
+	// File is the plan to apply on start-up. An empty path applies nothing.
+	File string `yaml:"file" env:"FILE"`
+}
+
 // API is the REST management interface.
 type API struct {
 	Enabled  bool   `yaml:"enabled" env:"ENABLED" envDefault:"true"`
@@ -215,6 +225,7 @@ type Config struct {
 	KPasswd   KPasswd   `yaml:"kpasswd" envPrefix:"KPASSWD_"`
 	DNS       DNS       `yaml:"dns" envPrefix:"DNS_"`
 	API       API       `yaml:"api" envPrefix:"API_"`
+	Bootstrap Bootstrap `yaml:"bootstrap" envPrefix:"BOOTSTRAP_"`
 	Behaviors Behaviors `yaml:"behaviors" envPrefix:"BEHAVIORS_"`
 
 	// Path is the file this configuration was read from. It is filled in by Load rather than
@@ -318,6 +329,7 @@ func (c *Config) normalize() error {
 	c.LDAPS.KeyPath = c.resolve(c.LDAPS.KeyPath)
 	c.API.CertPath = c.resolve(c.API.CertPath)
 	c.API.KeyPath = c.resolve(c.API.KeyPath)
+	c.Bootstrap.File = c.resolve(c.Bootstrap.File)
 
 	return nil
 }
@@ -369,6 +381,14 @@ func (c *Config) Validate() error {
 
 	if err := c.validateTLS(); err != nil {
 		return err
+	}
+
+	// A named plan that cannot be read is a start-up failure waiting to happen, so it is caught
+	// here where --check-config will find it.
+	if len(c.Bootstrap.File) > 0 {
+		if _, err := os.Stat(c.Bootstrap.File); err != nil {
+			return fmt.Errorf("bootstrap.file: %w", err)
+		}
 	}
 
 	return c.validateKerberos()

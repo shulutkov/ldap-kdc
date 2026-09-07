@@ -1,0 +1,76 @@
+# A directory described in advance, applied when the service starts.
+#
+# This exists for the cases where nobody is present to provision the realm: a continuous
+# integration job, a test stand, a development container. Point at it with bootstrap.file in the
+# configuration, or with BOOTSTRAP_FILE in the environment.
+#
+# Applying a plan creates what is missing and leaves alone what is already there. It is not a
+# reconciler: a service that reset an account's password on every restart, because a file still
+# named it, would be a hazard rather than a convenience. Change something afterwards and it stays
+# changed.
+#
+# Passwords here are in the clear. Keep the file readable by its owner alone -- the service warns
+# on start-up when it is not -- and prefer setting real accounts' passwords through the API.
+
+groups:
+  - name: admins
+    # Numbers are allocated automatically when left out.
+    gid_number: 5000
+    capabilities:
+      - action: search
+        object: "*"
+      - action: write
+        object: "*"
+
+  - name: staff
+    gid_number: 5001
+
+users:
+  - name: admin
+    primary_group: 5000
+    given_name: Ada
+    sn: Admin
+    mail: admin@example.com
+    password: a sufficiently long password
+    # Unlike a password set through the API, a seeded one is usable straight away: whatever runs
+    # next is going to use it, and nobody is there to be asked for a new one. Set this to demand a
+    # change at first login anyway.
+    force_change: false
+
+  - name: alice
+    primary_group: 5001
+    password: another long enough password
+    # Further names the account answers to. Both reach the same keys; a client that asks for
+    # canonicalization is told the real name in the reply.
+    aliases:
+      - alice.smith
+    capabilities:
+      - action: search
+        object: dc=example,dc=com
+
+principals:
+  # A service principal with no password gets random keys, which cannot be guessed. Fetch its
+  # keytab from the API once the service is up.
+  - name: HTTP/www.example.com
+    ok_as_delegate: true
+    aliases:
+      - HTTP/web.example.com
+
+  # A principal trusted to act for others, for testing constrained delegation.
+  - name: HTTP/app.example.com
+    ok_to_auth_as_delegate: true
+    allowed_to_delegate_to:
+      - MSSQLSvc/db.example.com@EXAMPLE.COM
+    allowed_to_impersonate:
+      - alice@EXAMPLE.COM
+
+# Records in the realm's zone. Reverse answers are derived from these, so there are no PTR records
+# to write.
+dns_records:
+  - name: www.example.com
+    type: A
+    value: 192.0.2.20
+
+  - name: app.example.com
+    type: A
+    value: 192.0.2.21

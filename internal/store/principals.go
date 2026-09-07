@@ -112,6 +112,7 @@ func (s *Store) ListPrincipals(ctx context.Context, realm string) ([]Principal, 
 	for i := range out {
 		out[i].AllowedToDelegateTo = targets.delegateTo[out[i].ID]
 		out[i].AllowedToImpersonate = targets.impersonate[out[i].ID]
+		out[i].Aliases = targets.aliases[out[i].ID]
 	}
 
 	return out, nil
@@ -131,6 +132,15 @@ func (s *Store) GetPrincipalKVNO(ctx context.Context, name krbkeys.Name, kvno in
 func (s *Store) getPrincipal(ctx context.Context, q querier, name krbkeys.Name, kvno int) (*Principal, error) {
 	p, err := scanPrincipal(q.QueryRowContext(ctx,
 		principalSelect+` WHERE p.name = ? AND p.realm = ?`, name.Principal(), name.Realm))
+
+	// A name nobody holds canonically may still be one of its aliases, which is the whole point
+	// of having them: both names reach the same keys, and only the reply says which is real.
+	if errors.Is(err, sql.ErrNoRows) {
+		p, err = scanPrincipal(q.QueryRowContext(ctx, principalSelect+`
+			WHERE p.id = (SELECT principal_id FROM principal_aliases
+			              WHERE name = ? AND realm = ?)`, name.Principal(), name.Realm))
+	}
+
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -152,6 +162,7 @@ func (s *Store) getPrincipal(ctx context.Context, q querier, name krbkeys.Name, 
 	}
 	p.AllowedToDelegateTo = lists.delegateTo[p.ID]
 	p.AllowedToImpersonate = lists.impersonate[p.ID]
+	p.Aliases = lists.aliases[p.ID]
 
 	return p, nil
 }
@@ -205,6 +216,16 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 	now := time.Now().UTC()
 
 	return s.write(ctx, func(tx *sql.Tx) error {
+		// The unique index catches a clash with another principal's own name; a clash with
+		// somebody's alias spans two tables and has to be checked here.
+		taken, err := s.nameTaken(ctx, tx, name, 0)
+		if err != nil {
+			return err
+		}
+		if taken {
+			return fmt.Errorf("%w: %s already names a principal in this realm", ErrConflict, name)
+		}
+
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO principals (name, realm, user_id, kvno, enabled, requires_preauth,
 			        allow_forwardable, allow_proxiable, allow_renewable, allow_postdate,
@@ -235,7 +256,11 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 			return err
 		}
 
-		return s.replacePrincipalLists(ctx, tx, p)
+		if err := s.replacePrincipalLists(ctx, tx, p); err != nil {
+			return err
+		}
+
+		return s.replaceAliases(ctx, tx, p)
 	})
 }
 
@@ -272,6 +297,10 @@ func (s *Store) UpdatePrincipal(ctx context.Context, name krbkeys.Name, mutate f
 		}
 
 		if err := s.replacePrincipalLists(ctx, tx, p); err != nil {
+			return err
+		}
+
+		if err := s.replaceAliases(ctx, tx, p); err != nil {
 			return err
 		}
 
@@ -469,35 +498,60 @@ func (s *Store) PrincipalsForUser(ctx context.Context, userID int64) ([]Principa
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []Principal
+	var (
+		out []Principal
+		ids []int64
+	)
+
 	for rows.Next() {
 		p, err := scanPrincipal(rows)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, *p)
+		ids = append(ids, p.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return out, rows.Err()
+	aliases, err := s.loadAliases(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Aliases = aliases[out[i].ID]
+	}
+
+	return out, nil
 }
 
-// principalLists holds the two per-principal name lists that govern delegation.
+// principalLists holds the per-principal name lists: the two that govern delegation, and the
+// alternative names the principal answers to.
 type principalLists struct {
 	delegateTo  map[int64][]string
 	impersonate map[int64][]string
+	aliases     map[int64][]string
 }
 
-// loadPrincipalLists fetches the delegation targets and impersonation restrictions of several
-// principals in one query each.
+// loadPrincipalLists fetches the delegation targets, impersonation restrictions and aliases of
+// several principals in one query each.
 func (s *Store) loadPrincipalLists(ctx context.Context, q querier, ids []int64) (principalLists, error) {
 	out := principalLists{
 		delegateTo:  make(map[int64][]string, len(ids)),
 		impersonate: make(map[int64][]string, len(ids)),
+		aliases:     make(map[int64][]string, len(ids)),
 	}
 
 	if len(ids) == 0 {
 		return out, nil
 	}
+
+	aliases, err := s.loadAliases(ctx, q, ids)
+	if err != nil {
+		return principalLists{}, err
+	}
+	out.aliases = aliases
 
 	for _, t := range []struct {
 		table string
@@ -587,7 +641,10 @@ func (s *Store) PrimaryPrincipals(ctx context.Context) (map[int64]Principal, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	out := make(map[int64]Principal)
+	var (
+		out = make(map[int64]Principal)
+		ids []int64
+	)
 
 	for rows.Next() {
 		p, err := scanPrincipal(rows)
@@ -596,10 +653,23 @@ func (s *Store) PrimaryPrincipals(ctx context.Context) (map[int64]Principal, err
 		}
 		if p.UserID != nil {
 			out[*p.UserID] = *p
+			ids = append(ids, p.ID)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return out, rows.Err()
+	aliases, err := s.loadAliases(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	for uid, p := range out {
+		p.Aliases = aliases[p.ID]
+		out[uid] = p
+	}
+
+	return out, nil
 }
 
 // ServicePrincipalsOfClass returns the principals in a realm whose service class matches, for

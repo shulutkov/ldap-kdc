@@ -125,7 +125,7 @@ func TestForcedPasswordChange(t *testing.T) {
 
 	// MIT krb5 answers an expired password by starting a password change of its own rather than
 	// simply refusing, so the check is that it says the password has expired at all.
-	out, _ := shared.run(t, "KRB5CCNAME=FILE:/tmp/cc-carol "+kinit(user, initial))
+	out, _ := shared.run(t, kinitTo("/tmp/cc-carol", user, initial))
 	if !strings.Contains(strings.ToLower(out), "expired") {
 		t.Errorf("the administratively set password was accepted without a change being demanded:\n%s", out)
 	}
@@ -137,7 +137,7 @@ func TestForcedPasswordChange(t *testing.T) {
 	}
 
 	// The new password works over Kerberos...
-	shared.mustRun(t, "KRB5CCNAME=FILE:/tmp/cc-carol2 "+kinit(user, chosen))
+	shared.mustRun(t, kinitTo("/tmp/cc-carol2", user, chosen))
 
 	// ...and over LDAP, because the two credentials are set together. Reading anything needs a
 	// capability, so the account is granted one first: what is under test is the password, not
@@ -199,7 +199,7 @@ func TestWrongPasswordIsRefused(t *testing.T) {
 
 	shared.addUser(t, user, password, false)
 
-	out, code := shared.run(t, "KRB5CCNAME=FILE:/tmp/cc-erin "+kinit(user, "not the password"))
+	out, code := shared.run(t, kinitTo("/tmp/cc-erin", user, "not the password"))
 	if code == 0 {
 		t.Fatalf("a wrong password produced a ticket:\n%s", out)
 	}
@@ -217,13 +217,105 @@ func dig(args string) string {
 
 // kinit builds a command that feeds the password in without a terminal.
 func kinit(user, password string) string {
-	return "printf '%s\\n' '" + password + "' | kinit " + user + "@" + realm
+	return kinitTo("", user, password)
 }
 
-// ldapsearch builds a simple-bind search against the directory.
-func ldapsearch(user, password, filter, attrs string) string {
-	dn := "cn=" + user + ",ou=e2e,ou=users,dc=example,dc=com"
+// kinitTo is kinit writing to a named credentials cache.
+//
+// The assignment goes on the kinit itself rather than in front of the pipeline: a prefix before
+// the printf would set the variable for the printf and leave kinit writing to the default cache,
+// which is a quiet way to have a test read someone else's tickets.
+func kinitTo(cache, user, password string) string {
+	command := "kinit " + user + "@" + realm
+	if len(cache) > 0 {
+		command = "KRB5CCNAME=FILE:" + cache + " " + command
+	}
 
+	return "printf '%s\\n' '" + password + "' | " + command
+}
+
+// ldapsearch builds a simple-bind search for an account in the group this suite provisions.
+func ldapsearch(user, password, filter, attrs string) string {
+	return ldapsearchDN("cn="+user+",ou=e2e,ou=users,dc=example,dc=com", password, filter, attrs)
+}
+
+// ldapsearchDN builds a simple-bind search for an arbitrary distinguished name.
+func ldapsearchDN(dn, password, filter, attrs string) string {
 	return "ldapsearch -x -H ldap://" + kdcHost + " -D '" + dn + "' -w '" + password +
 		"' -b 'dc=example,dc=com' '" + filter + "' " + attrs
+}
+
+// TestBootstrappedDirectoryIsUsableImmediately checks the mechanism this suite relies on: the
+// service comes up with the accounts, the service principal and the records a plan described,
+// without anything having provisioned them.
+func TestBootstrappedDirectoryIsUsableImmediately(t *testing.T) {
+	// The account authenticates with the password from the plan, and is not asked to change it:
+	// a seeded account exists to be used by whatever runs next, and nobody is there to choose.
+	shared.mustRun(t, kinitTo("/tmp/cc-seeded", seededUser, seededPassword))
+
+	tickets := shared.mustRun(t, "KRB5CCNAME=FILE:/tmp/cc-seeded klist")
+	if !strings.Contains(tickets, seededUser+"@"+realm) {
+		t.Errorf("no ticket for the seeded account:\n%s", tickets)
+	}
+
+	// The seeded address record answers forward and, derived from it, in reverse -- which is
+	// what lets the seeded service principal be reached by its host name.
+	if out := shared.mustRun(t, dig("-t A "+seededHost)); !strings.Contains(out, seededHostIP) {
+		t.Errorf("the seeded address record is missing: %q", strings.TrimSpace(out))
+	}
+	if out := shared.mustRun(t, dig("-x "+seededHostIP)); !strings.Contains(out, seededHost+".") {
+		t.Errorf("the seeded record has no reverse answer: %q", strings.TrimSpace(out))
+	}
+
+	out, code := shared.run(t, "KRB5CCNAME=FILE:/tmp/cc-seeded kvno HTTP/"+seededHost)
+	if code != 0 {
+		t.Fatalf("no service ticket for the seeded principal:\n%s", out)
+	}
+
+	// The capability came from the plan too, so the account can read the directory at once.
+	search := shared.mustRun(t, ldapsearchDN(
+		"cn="+seededUser+",ou=seeded,ou=users,dc=example,dc=com",
+		seededPassword, "(cn="+seededUser+")", "cn givenName"))
+
+	if !strings.Contains(search, "givenName: Seeded") {
+		t.Errorf("the seeded account is missing what the plan gave it:\n%s", search)
+	}
+}
+
+// TestAnAliasReachesTheSameAccount logs in under a name the account merely answers to, and checks
+// that asking for canonicalization is what turns it back into the real one.
+func TestAnAliasReachesTheSameAccount(t *testing.T) {
+	// The alias takes the account's own password, because both names reach the same keys.
+	shared.mustRun(t, kinitTo("/tmp/cc-alias", seededAlias, seededPassword))
+
+	// Nothing asked to be renamed, so the ticket is cached under the name that was typed.
+	tickets := shared.mustRun(t, "KRB5CCNAME=FILE:/tmp/cc-alias klist")
+	if !strings.Contains(tickets, seededAlias+"@"+realm) {
+		t.Errorf("the ticket is not cached under the alias:\n%s", tickets)
+	}
+
+	// kinit -C sets the CANONICALIZE option, and the reply then names the real principal.
+	shared.mustRun(t, "printf '%s\\n' '"+seededPassword+"' | KRB5CCNAME=FILE:/tmp/cc-canon "+
+		"kinit -C "+seededAlias+"@"+realm)
+
+	tickets = shared.mustRun(t, "KRB5CCNAME=FILE:/tmp/cc-canon klist")
+	if !strings.Contains(tickets, seededUser+"@"+realm) {
+		t.Errorf("canonicalization did not return the real name:\n%s", tickets)
+	}
+
+	// The directory publishes both names the way FreeIPA does, so a client can tell which is
+	// which without asking the KDC.
+	search := shared.mustRun(t, ldapsearchDN(
+		"cn="+seededUser+",ou=seeded,ou=users,dc=example,dc=com",
+		seededPassword, "(cn="+seededUser+")", "krbPrincipalName krbCanonicalName"))
+
+	for _, want := range []string{
+		"krbPrincipalName: " + seededUser + "@" + realm,
+		"krbPrincipalName: " + seededAlias + "@" + realm,
+		"krbCanonicalName: " + seededUser + "@" + realm,
+	} {
+		if !strings.Contains(search, want) {
+			t.Errorf("the entry is missing %q:\n%s", want, search)
+		}
+	}
 }

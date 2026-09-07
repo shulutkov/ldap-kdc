@@ -40,14 +40,30 @@ type Store struct {
 	// and read on every object creation.
 	idRange IDRange
 
+	// hashCost is the bcrypt work factor for stored password digests.
+	hashCost int
+
 	// writeMu serializes write transactions. SQLite allows a single writer, and taking the
 	// lock in the process is cheaper and far more predictable than letting concurrent writers
 	// collide and retry on SQLITE_BUSY.
 	writeMu sync.Mutex
 }
 
+// Option adjusts a store at construction.
+type Option func(*Store)
+
+// WithPasswordHashCost sets the bcrypt work factor.
+//
+// It exists for tests. Hashing at the production cost is deliberately slow, and a suite that does
+// it a hundred times spends minutes proving nothing about the cost; worse, on a loaded machine the
+// delay pushes a password change past the five second deadline a Kerberos client allows for a
+// reply. Nothing outside this repository can reach it: the package is internal.
+func WithPasswordHashCost(cost int) Option {
+	return func(s *Store) { s.hashCost = cost }
+}
+
 // Open opens (creating if needed) the database at path and brings its schema up to date.
-func Open(ctx context.Context, path string, sealer *secret.Sealer, log zerolog.Logger) (*Store, error) {
+func Open(ctx context.Context, path string, sealer *secret.Sealer, log zerolog.Logger, opts ...Option) (*Store, error) {
 	if dir := filepath.Dir(path); len(dir) > 0 && dir != "." {
 		if err := ensureDir(dir); err != nil {
 			return nil, err
@@ -77,7 +93,15 @@ func Open(ctx context.Context, path string, sealer *secret.Sealer, log zerolog.L
 		return nil, fmt.Errorf("opening database %s: %w", path, err)
 	}
 
-	s := &Store{db: db, sealer: sealer, log: log, idRange: DefaultIDRange()}
+	s := &Store{
+		db: db, sealer: sealer, log: log,
+		idRange:  DefaultIDRange(),
+		hashCost: DefaultPasswordHashCost,
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
 
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()

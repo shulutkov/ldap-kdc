@@ -18,6 +18,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/shulutkov/ldap-kdc/internal/api"
+	"github.com/shulutkov/ldap-kdc/internal/bootstrap"
 	"github.com/shulutkov/ldap-kdc/internal/config"
 	"github.com/shulutkov/ldap-kdc/internal/dnssrv"
 	"github.com/shulutkov/ldap-kdc/internal/kdc"
@@ -145,6 +146,10 @@ func run(cfg *config.Config) error {
 		Int("idRangeBase", idRange.BaseID).
 		Int("idRangeSize", idRange.Size).
 		Msg("domain identity")
+
+	if err := applyBootstrap(ctx, cfg, st, encTypes, log); err != nil {
+		return err
+	}
 
 	m := metrics.New()
 
@@ -280,6 +285,46 @@ func run(cfg *config.Config) error {
 
 	<-ctx.Done()
 	log.Info().Msg("shutting down")
+
+	return nil
+}
+
+// applyBootstrap brings the directory up to the plan named in the configuration, before any
+// listener starts. Doing it here rather than after means a client that sees the service accept a
+// connection sees a directory that is already what the plan described.
+func applyBootstrap(
+	ctx context.Context,
+	cfg *config.Config,
+	st *store.Store,
+	encTypes []int32,
+	log zerolog.Logger,
+) error {
+	if len(cfg.Bootstrap.File) == 0 {
+		return nil
+	}
+
+	plan, err := bootstrap.Load(cfg.Bootstrap.File)
+	if err != nil {
+		return err
+	}
+
+	bootstrap.CheckFilePermissions(cfg.Bootstrap.File, plan, log)
+
+	summary, err := bootstrap.Apply(ctx, st, plan, bootstrap.Options{
+		Realm:             cfg.Server.Realm,
+		EncTypes:          encTypes,
+		MinPasswordLength: cfg.KPasswd.MinPasswordLength,
+		DefaultTTL:        int(cfg.DNS.TTL / time.Second),
+	}, log)
+	if err != nil {
+		return fmt.Errorf("applying %s: %w", cfg.Bootstrap.File, err)
+	}
+
+	log.Info().
+		Str("file", cfg.Bootstrap.File).
+		Int("created", summary.Created).
+		Int("existed", summary.Existed).
+		Msg("bootstrap plan applied")
 
 	return nil
 }

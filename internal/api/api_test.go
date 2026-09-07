@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-krb5/krb5/keytab"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
@@ -49,7 +50,10 @@ func newHarness(t *testing.T) *harness {
 
 	log := zerolog.New(io.Discard)
 
-	st, err := store.Open(ctx, filepath.Join(dir, "api.db"), sealer, log)
+	// Hashing at the production cost would have this suite spend minutes proving nothing
+	// about the cost, and on a loaded machine it pushes a password change past the five
+	// second deadline a Kerberos client allows for a reply.
+	st, err := store.Open(ctx, filepath.Join(dir, "api.db"), sealer, log, store.WithPasswordHashCost(bcrypt.MinCost))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -206,6 +210,56 @@ func TestCreatingAUserAlsoCreatesItsPrincipal(t *testing.T) {
 	}
 	if string(got.Value) != string(want[0].Value) {
 		t.Error("the Kerberos key does not match the password the API was given")
+	}
+}
+
+func TestAliasesAreCreatedAndReplacedThroughTheAPI(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	h.do(t, "POST", "/api/v1/groups", map[string]any{"name": "staff", "gidNumber": 5000})
+
+	status, body := h.do(t, "POST", "/api/v1/users", map[string]any{
+		"name": "alice", "uidNumber": 10000, "primaryGroup": 5000,
+		"password": "a long enough password", "aliases": []string{"alice.smith"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating user: status = %d, body = %v", status, body)
+	}
+
+	if p, err := h.store.GetPrincipal(ctx, krbkeys.MustParseName("alice.smith", testRealm)); err != nil {
+		t.Fatalf("the alias does not resolve: %v", err)
+	} else if p.Name != "alice" {
+		t.Errorf("alice.smith resolved to %s", p.Name)
+	}
+
+	status, body = h.do(t, "POST", "/api/v1/principals", map[string]any{
+		"name": "HTTP/www.example.com", "aliases": []string{"HTTP/web.example.com"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("creating principal: status = %d, body = %v", status, body)
+	}
+
+	// A name already spoken for cannot be handed to a second principal, whichever of the two
+	// holds it canonically.
+	if status, _ := h.do(t, "POST", "/api/v1/principals", map[string]any{
+		"name": "HTTP/mail.example.com", "aliases": []string{"HTTP/web.example.com"},
+	}); status != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for an alias another principal already answers to", status)
+	}
+
+	// PATCH replaces the list outright, so sending one without a name removes it.
+	if status, body := h.do(t, "PATCH", "/api/v1/principals/HTTP/www.example.com", map[string]any{
+		"aliases": []string{"HTTP/intranet.example.com"},
+	}); status != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", status, body)
+	}
+
+	if _, err := h.store.GetPrincipal(ctx, krbkeys.MustParseName("HTTP/web.example.com", testRealm)); err == nil {
+		t.Error("a replaced alias still resolves")
+	}
+	if _, err := h.store.GetPrincipal(ctx, krbkeys.MustParseName("HTTP/intranet.example.com", testRealm)); err != nil {
+		t.Errorf("the new alias does not resolve: %v", err)
 	}
 }
 

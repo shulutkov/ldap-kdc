@@ -31,6 +31,9 @@ type createPrincipalRequest struct {
 	AllowedToDelegateTo  []string `json:"allowedToDelegateTo,omitempty"`
 	AllowedToImpersonate []string `json:"allowedToImpersonate,omitempty"`
 
+	// Aliases are further names this principal answers to.
+	Aliases []string `json:"aliases,omitempty"`
+
 	MaxTicketLife    string `json:"maxTicketLife,omitempty"`
 	MaxRenewableLife string `json:"maxRenewableLife,omitempty"`
 
@@ -54,6 +57,10 @@ type patchPrincipalRequest struct {
 
 	AllowedToDelegateTo  *[]string `json:"allowedToDelegateTo,omitempty"`
 	AllowedToImpersonate *[]string `json:"allowedToImpersonate,omitempty"`
+
+	// Aliases replaces the principal's alternative names outright, so sending the list without
+	// one removes it. The canonical name is not part of the list and cannot be changed here.
+	Aliases *[]string `json:"aliases,omitempty"`
 
 	MaxTicketLife    *string `json:"maxTicketLife,omitempty"`
 	MaxRenewableLife *string `json:"maxRenewableLife,omitempty"`
@@ -145,6 +152,7 @@ func (s *Server) handleCreatePrincipal(w http.ResponseWriter, r *http.Request) {
 		OKToAuthAsDelegate:   boolOr(req.OKToAuthAsDelegate, false),
 		AllowedToDelegateTo:  req.AllowedToDelegateTo,
 		AllowedToImpersonate: req.AllowedToImpersonate,
+		Aliases:              req.Aliases,
 		ExpiresAt:            req.ExpiresAt,
 	}
 
@@ -233,6 +241,7 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 		applyIf(req.OKToAuthAsDelegate, &p.OKToAuthAsDelegate)
 		applyIf(req.AllowedToDelegateTo, &p.AllowedToDelegateTo)
 		applyIf(req.AllowedToImpersonate, &p.AllowedToImpersonate)
+		applyIf(req.Aliases, &p.Aliases)
 
 		if req.ExpiresAt != nil {
 			p.ExpiresAt = req.ExpiresAt

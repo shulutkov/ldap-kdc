@@ -130,7 +130,7 @@ can change passwords.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/stats` | realm summary: counts, enctypes, accounts without a password |
-| GET POST | `/api/v1/users` | list, create (creates the principal too unless `createPrincipal: false`) |
+| GET POST | `/api/v1/users` | list, create (the Kerberos principal is created with it) |
 | GET PATCH DELETE | `/api/v1/users/{name}` | read, edit, remove |
 | POST | `/api/v1/users/{name}/password` | set the password on both sides |
 | GET POST | `/api/v1/users/{name}/app-passwords` | list, mint (the secret is returned once) |
@@ -139,7 +139,7 @@ can change passwords.
 | GET PATCH DELETE | `/api/v1/groups/{name}` | read, edit, remove |
 | GET | `/api/v1/groups/{name}/members` | resolved membership, following included groups |
 | GET POST | `/api/v1/principals` | list, create |
-| GET PATCH DELETE | `/api/v1/principals/{name}` | read, edit policy, remove |
+| GET PATCH DELETE | `/api/v1/principals/{name}` | read, edit policy and `aliases`, remove |
 | POST | `/api/v1/principals/{name}/password` | re-key from a password or `{"randomize": true}` |
 | GET | `/api/v1/principals/{name}/keytab` | keytab for the current key version |
 | GET POST | `/api/v1/dns/records` | list (optionally `?name=`), create a record |
@@ -150,6 +150,20 @@ can change passwords.
 Principal names may carry a realm (`HTTP/host@OTHER.COM`); without one the service realm applies.
 A password change keeps the previous key version, so tickets and keytabs issued before the change
 keep working until they expire.
+
+### Aliases
+
+A principal can answer to more than one name. Pass `"aliases": ["alice.smith"]` when creating a
+user or a service principal, or send the list again in a `PATCH` on the principal to change it --
+the field replaces what is there, so leaving a name out removes it. Every account is a principal,
+so a user's aliases are edited through `/api/v1/principals/{name}` like any other.
+
+Both names reach the same keys: `kinit alice.smith` takes alice's password. The reply names
+whatever was asked for, unless the request carries the CANONICALIZE option -- `kinit -C`, or
+`canonicalize = true` in `krb5.conf` -- in which case the ticket comes back in the canonical name,
+as RFC 6806 requires. LDAP publishes every name as `krbPrincipalName` and the real one as
+`krbCanonicalName`. A name can belong to one principal only, canonically or as an alias, and the
+attempt to hand it to a second is refused rather than resolved by query order.
 
 ### Cross-realm trust
 
@@ -230,6 +244,38 @@ MIT recommends when reverse DNS cannot be trusted; it subsumes `rdns`, which has
 canonicalisation is off. The KDC also logs a hint of its own: when it refuses a service name it has
 never heard of while holding other principals of the same class, it says so and names them.
 
+## Bringing a realm up with a directory
+
+A service that starts empty is awkward for anything automated: a test stand, a continuous
+integration job or a development container has to provision itself before it can do anything, and
+that provisioning has to be kept in step with the service by hand. So the directory can be
+described in advance and applied at start-up:
+
+```yaml
+bootstrap:
+  file: /etc/ldap-kdc/bootstrap.yaml
+```
+
+The plan holds groups, accounts, service principals and DNS records; `bootstrap.example.yaml`
+covers the shape of it. Two things are worth knowing about how it behaves.
+
+It **creates what is missing and leaves alone what is there**. It is not a reconciler. A service
+that reset an account's password on every restart, because a file still named the account, would
+be a hazard rather than a convenience, so a password changed after the first start survives.
+
+A seeded password is **usable straight away**, where a password set through the API is expired so
+its owner picks their own. The plan is aimed at whatever runs next, and there is nobody there to be
+asked; `force_change: true` restores the other behaviour per account.
+
+The whole plan is validated before any of it is applied, so a file with a mistake in the third
+account does not leave the first two behind. Passwords in it are in the clear: keep it readable by
+its owner alone, which the service checks and warns about on start-up.
+
+The end-to-end suite uses this for its own fixtures, which is the closest thing to a demonstration
+that it works: an account, a service principal and an address record exist before the first
+listener accepts a connection, and `kinit` as that account succeeds without anything having
+provisioned it.
+
 ## Running as a container
 
 The published image is `ghcr.io/shulutkov/ldap-kdc`, tagged with each release. It is built from
@@ -294,7 +340,10 @@ three knobs FreeIPA exposes as `krbPwdMaxFailure`, `krbPwdFailureCountInterval` 
 `krbPwdLockoutDuration`. An administratively set password is expired, so its owner chooses the
 final value at first login. Protocol transition follows MIT: any service may ask for a ticket to
 itself in a user's name, and `OK_TO_AUTH_AS_DELEGATE` decides whether that ticket is forwardable.
-Impersonation can be narrowed per service, as `ipaAllowToImpersonate` does. Expired accounts answer
+Impersonation can be narrowed per service, as `ipaAllowToImpersonate` does. A principal may answer
+to several names: `krbPrincipalName` is multivalued, `krbCanonicalName` names the real one, and a
+request carrying the CANONICALIZE option -- what `kinit -C` and `canonicalize = true` in `krb5.conf`
+set -- is answered in the canonical name, as RFC 6806 section 5 requires. Expired accounts answer
 `KDC_ERR_NAME_EXP` and expired services `KDC_ERR_SERVICE_EXP`, rather than both being reported as
 revoked.
 

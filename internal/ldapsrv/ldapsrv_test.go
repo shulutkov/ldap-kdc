@@ -12,6 +12,7 @@ import (
 
 	"github.com/glauth/ldap"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
@@ -51,7 +52,10 @@ func newHarness(t *testing.T) *harness {
 
 	log := zerolog.New(io.Discard)
 
-	st, err := store.Open(ctx, filepath.Join(dir, "dir.db"), sealer, log)
+	// Hashing at the production cost would have this suite spend minutes proving nothing
+	// about the cost, and on a loaded machine it pushes a password change past the five
+	// second deadline a Kerberos client allows for a reply.
+	st, err := store.Open(ctx, filepath.Join(dir, "dir.db"), sealer, log, store.WithPasswordHashCost(bcrypt.MinCost))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -128,6 +132,15 @@ func (h *harness) seed(t *testing.T) {
 		Capabilities: []store.Capability{{Action: "search", Object: testBaseDN}},
 		SSHKeys:      []string{"ssh-ed25519 AAAAC3Nz alice@laptop"},
 	}, alicePass)
+
+	// alice answers to a second name, which is what the entry publishes as a multivalued
+	// krbPrincipalName.
+	if _, err := h.store.AddAlias(ctx,
+		krbkeys.MustParseName("alice", testRealm),
+		krbkeys.MustParseName("alice.smith", testRealm),
+	); err != nil {
+		t.Fatalf("AddAlias: %v", err)
+	}
 
 	h.addUser(t, &store.User{Name: "admin", UIDNumber: 10001, PrimaryGroup: 5002}, adminPass)
 
@@ -524,6 +537,16 @@ func TestEntriesCarryTheKerberosAndWindowsAttributes(t *testing.T) {
 
 	if got := e.GetAttributeValue("krbCanonicalName"); got != "alice@"+testRealm {
 		t.Errorf("krbCanonicalName = %q", got)
+	}
+
+	// As in FreeIPA, krbPrincipalName lists every name the account answers to while
+	// krbCanonicalName names the real one, so a client can tell an alias from the identity it
+	// stands for.
+	names := e.GetAttributeValues("krbPrincipalName")
+	for _, want := range []string{"alice@" + testRealm, "alice.smith@" + testRealm} {
+		if !slices.Contains(names, want) {
+			t.Errorf("krbPrincipalName %v is missing %q", names, want)
+		}
 	}
 
 	// The bitmask is one of prohibitions: the account is forwardable, proxiable and renewable,

@@ -14,6 +14,7 @@ import (
 	"github.com/go-krb5/krb5/iana"
 	"github.com/go-krb5/krb5/iana/asn1apptag"
 	"github.com/go-krb5/krb5/iana/errorcode"
+	"github.com/go-krb5/krb5/iana/flags"
 	"github.com/go-krb5/krb5/iana/keyusage"
 	"github.com/go-krb5/krb5/iana/msgtype"
 	"github.com/go-krb5/krb5/iana/patype"
@@ -68,6 +69,15 @@ func (s *Server) handleASReq(ctx context.Context, raw []byte, from net.Addr) ([]
 		}
 
 		return nil, krbErrf(errorcode.KRB_ERR_GENERIC, "internal error", err)
+	}
+
+	// A client that asked for canonicalization is answered with the principal's real name, which
+	// is how a login under an alias ends up holding a ticket in the canonical one (RFC 6806
+	// section 5). Without the flag the requested name is echoed back instead: a client that did
+	// not ask to be renamed compares the reply against what it sent.
+	if types.IsFlagSet(&body.KDCOptions, flags.Canonicalize) {
+		clientName = client.KrbName()
+		serverName = server.KrbName()
 	}
 
 	if status := client.Status(now); status != store.PrincipalOK {

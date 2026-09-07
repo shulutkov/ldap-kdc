@@ -130,11 +130,21 @@ func (b *entryBuilder) accountEntry(
 	}
 
 	// The Kerberos identity is published alongside the POSIX one, so a client that has to map
-	// an account to a principal can read it here instead of guessing at the realm.
+	// an account to a principal can read it here instead of guessing at the realm. As in
+	// FreeIPA, krbPrincipalName lists every name the account answers to and krbCanonicalName
+	// says which of them is the real one.
 	if len(b.cfg.Realm) > 0 {
 		name := u.Name + "@" + b.cfg.Realm
+		names := []string{name}
+
+		if principal != nil {
+			for _, a := range principal.Aliases {
+				names = append(names, a+"@"+principal.Realm)
+			}
+		}
+
 		attrs = append(attrs,
-			&ldap.EntryAttribute{Name: "krbPrincipalName", Values: []string{name}},
+			&ldap.EntryAttribute{Name: "krbPrincipalName", Values: names},
 			&ldap.EntryAttribute{Name: "krbCanonicalName", Values: []string{name}},
 		)
 	}

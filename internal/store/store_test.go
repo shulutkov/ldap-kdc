@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/secret"
@@ -29,7 +30,10 @@ func testStore(t *testing.T) *Store {
 		t.Fatalf("sealer: %v", err)
 	}
 
-	s, err := Open(context.Background(), filepath.Join(dir, "test.db"), sealer, zerolog.New(io.Discard))
+	// Hashing at the production cost would have this suite spend minutes proving nothing about
+	// the cost. What it is is measured by BenchmarkHashPassword instead.
+	s, err := Open(context.Background(), filepath.Join(dir, "test.db"), sealer,
+		zerolog.New(io.Discard), WithPasswordHashCost(bcrypt.MinCost))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -492,5 +496,45 @@ func TestFailureCountDecaysWithTheInterval(t *testing.T) {
 	}
 	if status := after.Status(time.Now()); status != PrincipalOK {
 		t.Errorf("status = %v, want the principal still usable", status)
+	}
+}
+
+func TestProductionHashCostIsNotWeakenedByTheTestOption(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	key, _, err := secret.LoadOrCreateMasterKey(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatalf("master key: %v", err)
+	}
+
+	sealer, err := secret.NewSealer(key)
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+
+	// Opened the way the service opens it, with no options at all.
+	s, err := Open(ctx, filepath.Join(dir, "cost.db"), sealer, zerolog.New(io.Discard))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	hash, err := s.HashPassword("a reasonably long password")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+
+	cost, err := bcrypt.Cost([]byte(hash))
+	if err != nil {
+		t.Fatalf("reading the cost back: %v", err)
+	}
+
+	// The suites lower this so they do not spend minutes on it. A refactor that let that
+	// setting escape into the default would weaken every password the service ever stores,
+	// silently and everywhere.
+	if cost != DefaultPasswordHashCost {
+		t.Errorf("a store opened without options hashes at cost %d, want %d",
+			cost, DefaultPasswordHashCost)
 	}
 }

@@ -45,6 +45,13 @@ const (
 	serviceIP = "10.99.0.10"
 	// reverseZone is the in-addr.arpa zone covering the network above.
 	reverseZone = "0.99.10.in-addr.arpa"
+
+	// The objects the bootstrap plan below brings up before anything else runs.
+	seededUser     = "seeded-user"
+	seededAlias    = "seeded.alias"
+	seededPassword = "the seeded account password"
+	seededHost     = "seeded.example.com"
+	seededHostIP   = "10.99.0.30"
 )
 
 // serviceConfig is the configuration the service runs with inside its container. The addresses are
@@ -83,6 +90,38 @@ dns:
 api:
   listen: 0.0.0.0:5555
   token: ` + apiToken + `
+
+bootstrap:
+  file: /etc/ldap-kdc/bootstrap.yaml
+`
+
+// bootstrapPlan is the directory the service is expected to come up with. Everything in it is
+// there before the first listener accepts a connection, so a test can use it without provisioning
+// anything of its own -- which is the point of the mechanism.
+const bootstrapPlan = `
+groups:
+  - name: seeded
+    gid_number: 7000
+    capabilities:
+      - action: search
+        object: "*"
+
+users:
+  - name: seeded-user
+    primary_group: 7000
+    given_name: Seeded
+    sn: Account
+    password: ` + seededPassword + `
+    aliases:
+      - ` + seededAlias + `
+
+principals:
+  - name: HTTP/` + seededHost + `
+
+dns_records:
+  - name: ` + seededHost + `
+    type: A
+    value: ` + seededHostIP + `
 `
 
 // stand is the running pair of containers plus the address of the management API.
@@ -162,11 +201,18 @@ func newStand(ctx context.Context) (*stand, func(), error) {
 			// base, same unprivileged user. Anything proved here is proved about the
 			// artifact rather than about a convenient stand-in for it.
 			Image: e2eImage,
-			Files: []testcontainers.ContainerFile{{
-				Reader:            strings.NewReader(serviceConfig),
-				ContainerFilePath: "/etc/ldap-kdc/ldap-kdc.yaml",
-				FileMode:          0o644,
-			}},
+			Files: []testcontainers.ContainerFile{
+				{
+					Reader:            strings.NewReader(serviceConfig),
+					ContainerFilePath: "/etc/ldap-kdc/ldap-kdc.yaml",
+					FileMode:          0o644,
+				},
+				{
+					Reader:            strings.NewReader(bootstrapPlan),
+					ContainerFilePath: "/etc/ldap-kdc/bootstrap.yaml",
+					FileMode:          0o644,
+				},
+			},
 			// The service runs as an unprivileged user and still has to bind 53, 88, 389 and
 			// 464. Opening the low ports to unprivileged processes in this namespace is what
 			// makes that possible, and asking for it here means the arrangement the image

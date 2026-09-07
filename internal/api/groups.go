@@ -61,7 +61,7 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if g.GIDNumber == 0 {
-		next, err := s.nextGIDNumber(r)
+		next, err := s.st.NextGIDNumber(r.Context())
 		if err != nil {
 			writeStoreError(w, err)
 
@@ -133,21 +133,4 @@ func (s *Server) handleGroupMembers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"members": members})
-}
-
-// nextGIDNumber picks a free gid above every existing one, starting at 5000.
-func (s *Server) nextGIDNumber(r *http.Request) (int, error) {
-	groups, err := s.st.ListGroups(r.Context())
-	if err != nil {
-		return 0, err
-	}
-
-	next := 5000
-	for i := range groups {
-		if groups[i].GIDNumber >= next {
-			next = groups[i].GIDNumber + 1
-		}
-	}
-
-	return next, nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/go-krb5/krb5/kadmin"
 	"github.com/go-krb5/krb5/messages"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/shulutkov/ldap-kdc/internal/kdc"
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
@@ -57,7 +58,10 @@ func newHarness(t *testing.T) *harness {
 
 	log := zerolog.New(io.Discard)
 
-	st, err := store.Open(ctx, filepath.Join(dir, "kdc.db"), sealer, log)
+	// Hashing at the production cost would have this suite spend minutes proving nothing
+	// about the cost, and on a loaded machine it pushes a password change past the five
+	// second deadline a Kerberos client allows for a reply.
+	st, err := store.Open(ctx, filepath.Join(dir, "kdc.db"), sealer, log, store.WithPasswordHashCost(bcrypt.MinCost))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

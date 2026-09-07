@@ -689,6 +689,14 @@ func (s *Server) issueTicket(ctx context.Context, spec issueSpec) ([]byte, *prot
 		return nil, perr
 	}
 
+	// The service was found under one of its aliases and the client asked to be told the real
+	// name, so the ticket is issued in that name (RFC 6806 section 5). Without the flag the
+	// ticket keeps the requested name, which is what a client that never asked expects to find
+	// in its credential cache.
+	if types.IsFlagSet(&spec.Body.KDCOptions, flags.Canonicalize) {
+		spec.Target = server.KrbName()
+	}
+
 	// Policy limits come from the identity the ticket is being issued for, which under S4U is
 	// not the principal that presented the TGT.
 	client, perr := s.loadPolicyPrincipal(ctx, spec.Client)

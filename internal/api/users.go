@@ -32,10 +32,8 @@ type createUserRequest struct {
 	// login. It defaults to true, because a password an administrator typed is one the
 	// administrator knows.
 	ForceChange *bool `json:"forceChange,omitempty"`
-	// CreatePrincipal defaults to true: a directory account without a Kerberos principal can
-	// bind over LDAP but can never obtain a ticket, which is rarely what anyone wants from
-	// this service.
-	CreatePrincipal *bool `json:"createPrincipal,omitempty"`
+	// Aliases are further Kerberos names the account answers to.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // patchUserRequest carries only the fields being changed; anything absent is left alone.
@@ -136,58 +134,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		OTPSecret: req.OTPSecret,
 	}
 
-	if u.UIDNumber == 0 {
-		next, err := s.nextUIDNumber(r)
-		if err != nil {
-			writeStoreError(w, err)
-
-			return
-		}
-		u.UIDNumber = next
-	}
-
-	if err := s.st.CreateUser(ctx, u); err != nil {
+	if err := s.st.CreateAccount(ctx, store.NewAccount{
+		User:              u,
+		Realm:             s.cfg.Realm,
+		EncTypes:          s.cfg.EncTypes,
+		Password:          req.Password,
+		PasswordExpiresAt: passwordExpiry(nil, req.ForceChange),
+		Aliases:           req.Aliases,
+	}); err != nil {
 		writeStoreError(w, err)
 
 		return
-	}
-
-	withPrincipal := req.CreatePrincipal == nil || *req.CreatePrincipal
-
-	if withPrincipal {
-		name := krbkeys.Name{Components: []string{u.Name}, Realm: s.cfg.Realm}
-
-		// The principal is keyed randomly to begin with. It is replaced the moment a password
-		// is set, and until then the account simply cannot obtain a ticket, which is safer
-		// than leaving it keyed to something guessable.
-		keys, err := krbkeys.RandomKeys(s.cfg.EncTypes)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "%s", err)
-
-			return
-		}
-
-		p := &store.Principal{
-			Name: name.Principal(), Realm: name.Realm, UserID: &u.ID,
-			Enabled: !u.Disabled, RequiresPreAuth: true,
-			AllowForwardable: true, AllowProxiable: true, AllowRenewable: true,
-		}
-
-		if err := s.st.CreatePrincipal(ctx, p, keys); err != nil {
-			writeStoreError(w, err)
-
-			return
-		}
-	}
-
-	if len(req.Password) > 0 {
-		expiry := passwordExpiry(nil, req.ForceChange)
-
-		if err := s.st.SetUserPassword(ctx, u.Name, req.Password, s.cfg.EncTypes, expiry); err != nil {
-			writeStoreError(w, err)
-
-			return
-		}
 	}
 
 	created, err := s.st.GetUser(ctx, u.Name)
@@ -197,7 +154,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.log.Info().Str("user", u.Name).Bool("principal", withPrincipal).Msg("user created")
+	s.log.Info().Str("user", u.Name).Msg("user created")
 	writeJSON(w, http.StatusCreated, map[string]any{"user": created})
 }
 
@@ -351,7 +308,7 @@ func (s *Server) handleCreateAppPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	hash, err := store.HashPassword(password)
+	hash, err := s.st.HashPassword(password)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "%s", err)
 
@@ -392,23 +349,6 @@ func (s *Server) handleDeleteAppPassword(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// nextUIDNumber picks a free uid above every existing one, starting at 10000.
-func (s *Server) nextUIDNumber(r *http.Request) (int, error) {
-	users, err := s.st.ListUsers(r.Context())
-	if err != nil {
-		return 0, err
-	}
-
-	next := 10000
-	for i := range users {
-		if users[i].UIDNumber >= next {
-			next = users[i].UIDNumber + 1
-		}
-	}
-
-	return next, nil
 }
 
 // applyIf writes a patch field onto its target when the field was present in the request.

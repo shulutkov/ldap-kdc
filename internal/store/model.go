@@ -106,6 +106,11 @@ type Principal struct {
 	// AllowedToDelegateTo lists the services this one may forward a user's identity to via
 	// S4U2Proxy. An empty list disables constrained delegation for the principal.
 	AllowedToDelegateTo []string `json:"allowedToDelegateTo,omitempty"`
+	// Aliases are further names this principal answers to, spelled without the realm as Name
+	// is. FreeIPA holds the same relationship as a multivalued krbPrincipalName with
+	// krbCanonicalName naming the real one.
+	Aliases []string `json:"aliases,omitempty"`
+
 	// AllowedToImpersonate narrows which principals may be impersonated, matching FreeIPA's
 	// ipaAllowToImpersonate. An empty list means any principal, as a missing attribute does
 	// there.
