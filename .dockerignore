@@ -1,0 +1,24 @@
+# Everything the build does not need, so an unrelated change does not invalidate the context.
+.git
+.github
+.idea
+.vscode
+test
+
+# Local state that must never reach an image
+*.db
+*.db-wal
+*.db-shm
+master.key
+*.keytab
+*.token
+*.pem
+*.crt
+*.key
+ldap-kdc.yaml
+
+# Build output and documentation
+/ldap-kdc
+/dist
+*.md
+Makefile

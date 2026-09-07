@@ -1,0 +1,21 @@
+# Build output
+/ldap-kdc
+/dist/
+
+# Local state: the database and the key that decrypts it
+*.db
+*.db-wal
+*.db-shm
+master.key
+*.keytab
+
+# Local configuration and credentials
+ldap-kdc.yaml
+*.token
+*.pem
+*.crt
+*.key
+
+# Editors
+.idea/
+.vscode/

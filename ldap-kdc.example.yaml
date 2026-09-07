@@ -1,0 +1,171 @@
+# ldap-kdc configuration.
+#
+# Only the settings an operator fixes once belong here. Users, groups, principals and their
+# credentials live in the database and are managed through the REST API.
+#
+# Every setting can also come from the environment, as <SECTION>_<NAME>: the realm below is
+# SERVER_REALM, the KDC address KDC_LISTEN. This file has the last word, so a key
+# written here overrides the environment; delete a key to let the environment supply it.
+
+debug: false
+# Line-delimited JSON instead of the human readable console format.
+structured_log: false
+
+server:
+  # The Kerberos realm. It is written into every salt, so it cannot be changed after the first
+  # start without re-keying every principal.
+  realm: EXAMPLE.COM
+
+  # DNS domain and LDAP naming context. Both are derived from the realm when omitted.
+  # domain: example.com
+  # base_dn: dc=example,dc=com
+
+  # Short domain name shown in issued PACs. Derived from the first label of the realm when omitted.
+  # netbios_name: EXAMPLE
+
+  # The domain SID that PACs are issued under. Generated on first start and kept in the database.
+  # Windows and Samba members derive their ACLs from it, so do not change it afterwards.
+  # domain_sid: S-1-5-21-1111111111-2222222222-3333333333
+
+  # RDN attributes for user and group entries: "cn=alice,ou=staff,ou=users,dc=example,dc=com".
+  name_format: cn
+  group_format: ou
+
+  # Attribute SSH keys are published under.
+  ssh_key_attr: sshPublicKey
+
+  # Let unauthenticated clients read the root DSE. SSSD needs this.
+  anonymous_dse: true
+
+  # POSIX ids are mapped onto the Windows relative identifiers that appear in issued PACs, the way
+  # FreeIPA's ipa-local range does. The range is pinned in the database on first start, because
+  # every SID handed out is derived from it: changing it later renames every account as far as a
+  # member server is concerned.
+  #
+  # An account whose uid or gid falls outside the range gets no SID, and therefore no PAC.
+  id_range_base_id: 1
+  id_range_size: 200000
+
+  # RIDs start here. Below 1000 Windows reserves them for well-known accounts, so a uid mapped
+  # straight through could present itself as the domain administrator.
+  id_range_base_rid: 1000
+
+  # The uid and gid spaces are independent, so a user and a group can share a number. The one that
+  # finds its primary RID taken falls back to this interval instead.
+  id_range_secondary_base_rid: 100000000
+
+database:
+  path: /var/lib/ldap-kdc/ldap-kdc.db
+
+  # Every Kerberos key in the database is encrypted with this file. It is generated on first
+  # start; back it up separately, because the database cannot be read without it.
+  master_key_file: /var/lib/ldap-kdc/master.key
+
+ldap:
+  enabled: true
+  listen: 0.0.0.0:389
+  # Offer StartTLS on the plain port.
+  tls: false
+  # cert_path: /etc/ldap-kdc/tls.crt
+  # key_path: /etc/ldap-kdc/tls.key
+
+ldaps:
+  enabled: false
+  listen: 0.0.0.0:636
+  # cert_path: /etc/ldap-kdc/tls.crt
+  # key_path: /etc/ldap-kdc/tls.key
+
+kdc:
+  enabled: true
+  # Used for both TCP and UDP.
+  listen: 0.0.0.0:88
+
+  max_ticket_life: 10h
+  max_renewable_life: 168h
+  clock_skew: 5m
+
+  # Enctypes the KDC will use, most preferred first. A key is generated for each of them whenever
+  # a password is set. Single-DES and RC4 are refused: they are broken in practice and accepting
+  # one would let a client negotiate the realm down to it.
+  enc_types:
+    - aes256-cts-hmac-sha1-96
+    - aes128-cts-hmac-sha1-96
+    - aes256-cts-hmac-sha384-192
+    - aes128-cts-hmac-sha256-128
+
+  # Require PA-ENC-TIMESTAMP. Turning this off exposes every principal to offline AS-REP cracking.
+  require_pre_auth: true
+
+  # Add a Microsoft PAC to issued tickets. Windows and Samba services need it for authorization.
+  issue_pac: true
+
+  # Allow protocol transition (S4U2Self) and constrained delegation (S4U2Proxy). Both are still
+  # gated per principal by allowTGTBasedAuth and allowedToDelegateTo.
+  allow_s4u: true
+
+  udp_max_size: 4096
+
+kpasswd:
+  enabled: true
+  listen: 0.0.0.0:464
+  min_password_length: 8
+
+# The realm's authoritative name server.
+#
+# Kerberos leans on DNS twice: clients find the KDC through SRV records, and a client handed a
+# host-based service name canonicalises the host through DNS before turning it into a principal.
+# Without a reverse zone answering with the names this realm uses, that canonicalisation asks for a
+# principal nobody registered, and every client has to be configured with rdns turned off instead.
+#
+# This server is authoritative only. A query for a name outside these zones is refused, not
+# resolved, so the service cannot become an open resolver.
+dns:
+  enabled: false
+  listen: 0.0.0.0:53
+
+  # The forward zone. Defaults to server.domain.
+  # zone: example.com
+
+  # Reverse zones answered for. Reverse answers are derived from the address records, so there are
+  # no PTR records to create or keep in step.
+  reverse_zones:
+    - 2.0.192.in-addr.arpa
+
+  # This server's fully qualified name and addresses. Both are required: they are the zone's name
+  # server, the target of every service record, and what reverse queries answer with. The hostname
+  # is not guessed from the operating system, because a wrong SRV target sends every client
+  # somewhere that does not answer.
+  hostname: kdc.example.com
+  addresses:
+    - 192.0.2.10
+
+  # Zone contact, written into the SOA. Defaults to hostmaster@<zone>.
+  # mailbox: hostmaster@example.com
+
+  ttl: 1h
+
+api:
+  enabled: true
+  # Bind to loopback unless a token is set: this interface can change any account's password.
+  listen: 127.0.0.1:5555
+  tls: false
+  # cert_path: /etc/ldap-kdc/api.crt
+  # key_path: /etc/ldap-kdc/api.key
+
+  # Required as "Authorization: Bearer <token>" on every /api request when set. Prefer supplying it
+  # as API_TOKEN or through token_file rather than writing the secret here.
+  # token: ""
+  # token_file: /etc/ldap-kdc/api.token
+
+behaviors:
+  # Skip the per-account search authorization entirely. Every authenticated account can then read
+  # the whole tree.
+  ignore_capabilities: false
+
+  # Throttle password guessing, over LDAP by source address and over Kerberos per principal.
+  limit_failed_binds: true
+  number_of_failed_binds: 3
+  period_of_failed_binds: 10s
+  block_failed_binds_for: 60s
+  prune_source_table_every: 10m
+  prune_sources_older_than: 10m

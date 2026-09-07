@@ -1,0 +1,57 @@
+# Every commit gets the whole suite, including the end-to-end one: its whole point is to be run
+# somewhere with a container runtime, and a GitHub runner has one.
+name: test
+
+on:
+  push:
+    # Branches only. A tag push is handled by the release workflow, which calls this one, so
+    # without this the two would race over the same commit.
+    branches: ['**']
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # The end-to-end suite is its own module, so its lock file belongs in the cache key too.
+          cache-dependency-path: |
+            go.sum
+            test/e2e/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-ed:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: |
+          go vet ./...
+          cd test/e2e && go vet ./...
+
+      # The service is a set of concurrent listeners over one store, which is exactly the shape of
+      # code the race detector earns its keep on.
+      - name: test
+        run: go test -race ./...
+
+      # Builds the shipped image and drives it with MIT krb5, OpenLDAP and dig.
+      - name: end to end
+        run: cd test/e2e && go test -timeout 900s ./...

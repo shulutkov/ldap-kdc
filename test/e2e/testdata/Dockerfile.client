@@ -1,0 +1,18 @@
+# A plain Linux box with the reference Kerberos, LDAP and DNS clients on it. The point of the
+# end-to-end suite is to be answered by these rather than by the Go libraries this project is
+# written with: MIT krb5 is what Linux actually runs, and it is stricter than the Go client about
+# canonicalisation and about the shape of a reply.
+FROM debian:stable-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        krb5-user \
+        ldap-utils \
+        dnsutils \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The container exists to have commands run in it.
+CMD ["sleep", "infinity"]
