@@ -123,16 +123,21 @@ func (b *entryBuilder) accountEntry(
 	attrs = append(attrs, &ldap.EntryAttribute{Name: "accountStatus", Values: []string{status}})
 
 	if len(u.Mail) > 0 {
-		attrs = append(attrs,
-			&ldap.EntryAttribute{Name: "mail", Values: []string{u.Mail}},
-			&ldap.EntryAttribute{Name: "userPrincipalName", Values: []string{u.Mail}},
-		)
+		attrs = append(attrs, &ldap.EntryAttribute{Name: "mail", Values: []string{u.Mail}})
 	}
 
 	// The Kerberos identity is published alongside the POSIX one, so a client that has to map
 	// an account to a principal can read it here instead of guessing at the realm. As in
 	// FreeIPA, krbPrincipalName lists every name the account answers to and krbCanonicalName
 	// says which of them is the real one.
+	//
+	// userPrincipalName is the SAME name under the spelling Active Directory uses, and it is the
+	// one a client written for AD searches by. It used to carry the account's mail address, which
+	// is a different fact that merely tends to look alike: an AD client then found nothing, and an
+	// account with no mail published no logon name at all. Measured against OpenBao's kerberos auth
+	// method (2026-09-08), which takes the realm off the presented ticket and searches
+	// `(userPrincipalName=<account>@<REALM>)` with no way to be told another attribute — a valid
+	// ticket authenticated and the account was then unfindable.
 	if len(b.cfg.Realm) > 0 {
 		name := u.Name + "@" + b.cfg.Realm
 		names := []string{name}
@@ -146,6 +151,7 @@ func (b *entryBuilder) accountEntry(
 		attrs = append(attrs,
 			&ldap.EntryAttribute{Name: "krbPrincipalName", Values: names},
 			&ldap.EntryAttribute{Name: "krbCanonicalName", Values: []string{name}},
+			&ldap.EntryAttribute{Name: "userPrincipalName", Values: []string{name}},
 		)
 	}
 

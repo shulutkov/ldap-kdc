@@ -519,6 +519,7 @@ func TestEntriesCarryTheKerberosAndWindowsAttributes(t *testing.T) {
 		[]string{
 			"objectClass", "krbPrincipalName", "krbCanonicalName", "krbTicketFlags",
 			"krbLastPwdChange", "krbLoginFailedCount", "ipaNTSecurityIdentifier",
+			"userPrincipalName", "mail",
 		}, nil))
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -550,6 +551,20 @@ func TestEntriesCarryTheKerberosAndWindowsAttributes(t *testing.T) {
 		if !slices.Contains(names, want) {
 			t.Errorf("krbPrincipalName %v is missing %q", names, want)
 		}
+	}
+
+	// userPrincipalName is the same identity spelled the way Active Directory spells it, and it is
+	// what a client written for AD searches by — OpenBao's kerberos auth method takes the realm off
+	// the ticket it just validated and looks for `(userPrincipalName=<account>@<REALM>)`, with no
+	// way to be pointed at another attribute. It used to carry the MAIL address, a different fact
+	// that merely tends to look alike, so such a client authenticated a valid ticket and then could
+	// not find the account at all.
+	if got := e.GetAttributeValue("userPrincipalName"); got != "alice@"+testRealm {
+		t.Errorf("userPrincipalName = %q, want the canonical principal %q", got, "alice@"+testRealm)
+	}
+	// And it is NOT the mail address, which stays where it belongs.
+	if mail := e.GetAttributeValue("mail"); mail == e.GetAttributeValue("userPrincipalName") && len(mail) > 0 {
+		t.Errorf("userPrincipalName and mail are both %q; the logon name and the mailbox are different facts", mail)
 	}
 
 	// The bitmask is one of prohibitions: the account is forwardable, proxiable and renewable,
