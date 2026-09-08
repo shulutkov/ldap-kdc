@@ -133,11 +133,13 @@ func (b *entryBuilder) accountEntry(
 	//
 	// userPrincipalName is the SAME name under the spelling Active Directory uses, and it is the
 	// one a client written for AD searches by. It used to carry the account's mail address, which
-	// is a different fact that merely tends to look alike: an AD client then found nothing, and an
+	// is a different fact that merely tends to look alike: such a client then found nothing, and an
 	// account with no mail published no logon name at all. Measured against OpenBao's kerberos auth
-	// method (2026-09-08), which takes the realm off the presented ticket and searches
-	// `(userPrincipalName=<account>@<REALM>)` with no way to be told another attribute — a valid
-	// ticket authenticated and the account was then unfindable.
+	// method (2026-09-08): configured with a UPN domain, it searches
+	// `(userPrincipalName=<account>@<REALM>)`, and a valid ticket authenticated while the account
+	// stayed unfindable. That client can be pointed at another attribute instead, so this was never
+	// the only way through — it is the spelling AD-shaped clients reach for first, and publishing
+	// the mail address under it was wrong on its own terms.
 	if len(b.cfg.Realm) > 0 {
 		name := u.Name + "@" + b.cfg.Realm
 		names := []string{name}
