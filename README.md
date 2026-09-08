@@ -141,25 +141,25 @@ themselves, next to what they describe. Adding an endpoint means adding its row 
 handler, pattern and documentation together -- which is also what makes an undocumented route
 impossible to add by accident.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/api/v1/stats` | realm summary: counts, enctypes, accounts without a password |
-| GET POST | `/api/v1/users` | list, create (the Kerberos principal is created with it) |
-| GET PATCH DELETE | `/api/v1/users/{name}` | read, edit, remove |
-| POST | `/api/v1/users/{name}/password` | set the password on both sides |
-| GET POST | `/api/v1/users/{name}/app-passwords` | list, mint (the secret is returned once) |
-| DELETE | `/api/v1/users/{name}/app-passwords/{id}` | revoke one |
-| GET POST | `/api/v1/groups` | list, create |
-| GET PATCH DELETE | `/api/v1/groups/{name}` | read, edit, remove (incl. `customAttributes`) |
-| GET | `/api/v1/groups/{name}/members` | resolved membership, following included groups |
-| GET POST | `/api/v1/principals` | list, create |
-| GET PATCH DELETE | `/api/v1/principals/{name}` | read, edit policy and `aliases`, remove |
-| POST | `/api/v1/principals/{name}/password` | re-key from a password or `{"randomize": true}` |
-| GET | `/api/v1/principals/{name}/keytab` | keytab for the current key version |
-| GET POST | `/api/v1/dns/records` | list (optionally `?name=`), create a record |
-| DELETE | `/api/v1/dns/records/{id}` | remove one |
-| GET POST | `/api/v1/trusts` | list, create a cross-realm trust |
-| GET PATCH DELETE | `/api/v1/trusts/{realm}` | read, edit, remove |
+| Method           | Path                                      | Purpose                                                      |
+|------------------|-------------------------------------------|--------------------------------------------------------------|
+| GET              | `/api/v1/stats`                           | realm summary: counts, enctypes, accounts without a password |
+| GET POST         | `/api/v1/users`                           | list, create (the Kerberos principal is created with it)     |
+| GET PATCH DELETE | `/api/v1/users/{name}`                    | read, edit, remove                                           |
+| POST             | `/api/v1/users/{name}/password`           | set the password on both sides                               |
+| GET POST         | `/api/v1/users/{name}/app-passwords`      | list, mint (the secret is returned once)                     |
+| DELETE           | `/api/v1/users/{name}/app-passwords/{id}` | revoke one                                                   |
+| GET POST         | `/api/v1/groups`                          | list, create                                                 |
+| GET PATCH DELETE | `/api/v1/groups/{name}`                   | read, edit, remove (incl. `customAttributes`)                |
+| GET              | `/api/v1/groups/{name}/members`           | resolved membership, following included groups               |
+| GET POST         | `/api/v1/principals`                      | list, create                                                 |
+| GET PATCH DELETE | `/api/v1/principals/{name}`               | read, edit policy and `aliases`, remove                      |
+| POST             | `/api/v1/principals/{name}/password`      | re-key from a password or `{"randomize": true}`              |
+| GET              | `/api/v1/principals/{name}/keytab`        | keytab for the current key version                           |
+| GET POST         | `/api/v1/dns/records`                     | list (optionally `?name=`), create a record                  |
+| DELETE           | `/api/v1/dns/records/{id}`                | remove one                                                   |
+| GET POST         | `/api/v1/trusts`                          | list, create a cross-realm trust                             |
+| GET PATCH DELETE | `/api/v1/trusts/{realm}`                  | read, edit, remove                                           |
 
 Principal names may carry a realm (`HTTP/host@OTHER.COM`); without one the service realm applies.
 A password change keeps the previous key version, so tickets and keytabs issued before the change
@@ -229,7 +229,14 @@ An authenticated LDAP client still needs a capability to read anything, granted 
 on any group it belongs to:
 
 ```json
-{"capabilities": [{"action": "search", "object": "ou=users,dc=example,dc=com"}]}
+{
+  "capabilities": [
+    {
+      "action": "search",
+      "object": "ou=users,dc=example,dc=com"
+    }
+  ]
+}
 ```
 
 `object` may be `*`, an exact DN, or a subtree that covers the request. `write` governs LDAP modify
@@ -265,12 +272,16 @@ The KDC is found through `_kerberos._udp.example.com`, the password service thro
 
 Without a reverse zone the client's own canonicalisation works against you. MIT krb5 defaults
 `dns_canonicalize_hostname` and `rdns` to true, so a program asking for a host-based service --
-anything using GSSAPI, such as `ssh`, `curl --negotiate` or `ldapsearch -Y GSSAPI` -- resolves the
-host forward, then looks the address back up, and builds the service principal from whatever the
-PTR said. With no PTR record, or one naming something else, it asks the KDC for a principal that
-was never created and the exchange fails with `KDC_ERR_S_PRINCIPAL_UNKNOWN`. Explicit principal
-names, as `kgetcred HTTP/www.example.com` uses, are unaffected, which is why the failure tends to
-appear only once a real application is involved.
+anything using GSSAPI, such as `ssh`, `curl --negotiate` or `psql` with `gssencmode=require` --
+resolves the host forward, then looks the address back up, and builds the service principal from
+whatever the PTR said. With no PTR record, or one naming something else, it asks the KDC for a
+principal that was never created and the exchange fails with `KDC_ERR_S_PRINCIPAL_UNKNOWN`.
+Explicit principal names, as `kgetcred HTTP/www.example.com` uses, are unaffected, which is why the
+failure tends to appear only once a real application is involved.
+
+The LDAP port here is not one of those destinations. Binds are simple binds and no SASL mechanism is
+offered, so `ldapsearch -Y GSSAPI` against this service fails at the bind rather than at the ticket.
+A ticket obtained from this realm is for a service somewhere else.
 
 If you run this service without its name server, or point clients at a DNS server whose reverse
 zone you do not control, turn the canonicalisation off on the client:
@@ -419,6 +430,61 @@ that Windows and Samba added for CVE-2022-37967, and `UPN_DNS_INFO`. Per-service
 PAC through `NO_AUTH_DATA_REQUIRED`. SID filtering on inbound cross-realm PACs. Replication: this
 is a single node, where FreeIPA is multi-master. And everything outside the directory itself --
 the certificate authority, DNS, host enrolment and SSSD integration.
+
+## Compared with Active Directory
+
+Nothing here reimplements Active Directory. But clients written for AD are the ones most likely to
+arrive at a realm that is not one, so what they find and what they do not is recorded rather than
+left to a login that fails without saying why.
+
+**The logon name.** `userPrincipalName` carries the account's canonical Kerberos principal --
+`alice@EXAMPLE.COM`, the same identity `krbCanonicalName` publishes, under the spelling AD uses. It
+is deliberately not the mail address. The two look alike because an AD deployment usually gives its
+UPN a suffix matching the mail domain, but they are different facts: an account with no mailbox
+still has a logon name. Publishing mail under this name left such an account with no logon name at
+all, and a client searching by one found nothing. Measured against OpenBao's Kerberos auth method
+(2026-09-08): configured with a UPN domain, it searches `(userPrincipalName=<account>@<REALM>)`, and
+a ticket that authenticated perfectly well belonged to an account it then could not find. The realm
+is the only suffix published -- AD's alternative UPN suffixes have no equivalent -- and a client
+that can be told to search another attribute (`uid`, `cn`) never needs this one. That is the usual
+answer: the UPN filter is a client's choice, not its only one.
+
+**Names AD has under other spellings.** `sAMAccountName`: the short logon name is `uid`, and the DN
+is built from `cn`. `objectSid`: the SID is here as FreeIPA's `ipaNTSecurityIdentifier`, in textual
+form -- `S-1-5-21-...-<rid>` -- rather than the binary octet string AD stores. `pwdLastSet`,
+`accountExpires` and the rest of the account state: the MIT and FreeIPA names listed above,
+`krbLastPwdChange`, `krbPasswordExpiration`, `krbPrincipalExpiration`, `krbTicketFlags`, alongside
+the `shadow*` set. `userAccountControl` exists only inside the PAC, where a member server reads it.
+
+**Names with no counterpart.** `objectGUID`: there is no opaque per-object handle -- an object is
+named by its DN and carries a SID, and that is all. `unicodePwd`: no password, in any encoding, is
+readable over LDAP, and changing one goes through modify, `kpasswd` or the REST API.
+
+**Binding.** AD accepts a UPN or `DOMAIN\user` as a simple bind name. Here a bind name is a DN under
+the base, or an address-shaped string -- and that string is matched against `mail`, not against
+`userPrincipalName`. So `alice@EXAMPLE.COM` binds only when it is also the account's mail address:
+the UPN is a name to search BY, not one to bind AS. There is no SASL either: the root DSE answers an
+empty `supportedSASLMechanisms`, so there is no GSSAPI bind, no NTLM, and no LDAP signing or
+sealing. LDAPS or StartTLS is what protects a bind, and over an untrusted network it is not
+optional.
+
+**The tree.** The layout is glauth's -- `cn=alice,ou=staff,ou=users,$BASE` -- and not
+`CN=Alice,CN=Users,DC=example,DC=com`. The root DSE answers `defaultNamingContext`, which is what an
+AD-shaped client probes for first, but there is no configuration naming context, no Global Catalog
+on port 3268, and the schema subentry answers without carrying any definitions. Nested membership
+needs no special search: `memberOf` already lists every group the account reaches, including the
+ones reached through other groups, so there is nothing for AD's chain-matching rule to do.
+
+**Kerberos.** AES only. RC4-HMAC, which AD kept as a default long after it stopped being defensible
+and which older clients still offer, is refused rather than accepted for compatibility. The PAC is
+issued and signed so Windows and Samba services accept it, with RIDs mapped from POSIX ids;
+`PAC_REQUESTOR`, `PAC_ATTRIBUTES_INFO` and `UPN_DNS_INFO` are not implemented. A trust is a shared
+key created through the REST API, not an AD trust object: no NETLOGON, no trust discovery, and no
+SID filtering on what a trusted realm asserts.
+
+**Not a domain controller.** No SMB, no netlogon, no group policy, no DFS: a Windows machine cannot
+join this realm the way it joins a domain. What works is the Kerberos side -- a service that
+validates tickets and reads the PAC does not care which KDC issued them.
 
 ## Limitations
 
