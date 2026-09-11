@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/glauth/ldap"
-	"github.com/pquerna/otp/totp"
 	"github.com/rs/zerolog"
 
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
@@ -111,57 +110,34 @@ func (h *Handler) Bind(bindDN, bindSimplePw string, conn net.Conn) (ldap.LDAPRes
 		return code, nil
 	}
 
-	if user.Disabled {
-		h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn)).Msg("bind on a disabled account")
-		h.result("bind", "disabled")
+	// The credential decision itself is store.Authenticate, shared with the OIDC login form: two
+	// doors that decide credentials separately are two doors that eventually disagree. What stays
+	// here is everything about the CONNECTION — the limiter, the log line, the metric, the LDAP
+	// result code — because only this door knows where the attempt came from.
+	outcome := store.Authenticate(user, bindSimplePw)
+	entry := h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn))
 
-		return ldap.LDAPResultInvalidCredentials, nil
+	switch outcome {
+	case store.OutcomeDisabled:
+		entry.Msg("bind on a disabled account")
+	case store.OutcomeAppPassword:
+		entry.Str("credential", "application password").Msg("bind succeeded")
+	case store.OutcomeBadOTP:
+		entry.Msg("invalid one-time code")
+	case store.OutcomeInvalid:
+		entry.Msg("invalid credentials")
+	case store.OutcomeOK:
+		entry.Msg("bind succeeded")
 	}
+	h.result("bind", string(outcome))
 
-	// The full string is kept: an application password is presented on its own, without the
-	// one-time code that the account's main password would carry.
-	presented := bindSimplePw
-	password := bindSimplePw
-	otpValid := len(user.OTPSecret) == 0
-
-	if len(user.OTPSecret) > 0 && len(bindSimplePw) > 6 {
-		code := bindSimplePw[len(bindSimplePw)-6:]
-		password = bindSimplePw[:len(bindSimplePw)-6]
-		otpValid = totp.Validate(code, user.OTPSecret)
-	}
-
-	for _, ap := range user.AppPasswords {
-		if store.CheckPassword(ap.Hash, presented) {
-			h.limiter.noteSuccess(conn)
-			h.log.Info().Str("dn", bindDN).Str("appPassword", ap.Name).Str("src", sourceAddr(conn)).
-				Msg("bind succeeded with an application password")
-			h.result("bind", "ok-app-password")
-
-			return ldap.LDAPResultSuccess, nil
-		}
-	}
-
-	if !otpValid {
+	if !outcome.Granted() {
 		h.limiter.noteFailure(conn)
-		h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn)).Msg("invalid one-time code")
-		h.result("bind", "bad-otp")
-
-		return ldap.LDAPResultInvalidCredentials, nil
-	}
-
-	// An account with no password digest cannot bind at all. Falling through to success here
-	// would let every account created but never given a password authenticate with anything.
-	if len(user.PassBcrypt) == 0 || !store.CheckPassword(user.PassBcrypt, password) {
-		h.limiter.noteFailure(conn)
-		h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn)).Msg("invalid credentials")
-		h.result("bind", "invalid")
 
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
 	h.limiter.noteSuccess(conn)
-	h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn)).Msg("bind succeeded")
-	h.result("bind", "ok")
 
 	return ldap.LDAPResultSuccess, nil
 }

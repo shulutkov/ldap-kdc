@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -207,6 +208,50 @@ type API struct {
 	Docs bool `yaml:"docs" env:"DOCS" envDefault:"true"`
 }
 
+// OIDCClient is a relying party the provider will issue tokens to.
+//
+// The id may be any string, and a deployment that identifies its services by URL should use the
+// service's URL: an id token's audience IS the client id, so that is what a service checking
+// "is this token for me" compares against.
+type OIDCClient struct {
+	ID                 string   `yaml:"id"`
+	Name               string   `yaml:"name"`
+	RedirectURIs       []string `yaml:"redirect_uris"`
+	PostLogoutRedirect []string `yaml:"post_logout_redirect_uris"`
+}
+
+// OIDC serves the directory's accounts to browsers as an OpenID Connect provider, so one sign-in
+// reaches every interface a deployment puts in front of it.
+type OIDC struct {
+	Enabled  bool   `yaml:"enabled" env:"ENABLED"`
+	Listen   string `yaml:"listen" env:"LISTEN" envDefault:"127.0.0.1:5557"`
+	TLS      bool   `yaml:"tls" env:"TLS"`
+	CertPath string `yaml:"cert_path" env:"CERT_PATH"`
+	KeyPath  string `yaml:"key_path" env:"KEY_PATH"`
+
+	// Issuer is what lands in every token's iss claim and what the BROWSER must reach — the
+	// public address, which behind a proxy is not the address this binds. It must not end in a
+	// slash: verifiers compare it to the iss claim byte for byte.
+	Issuer string `yaml:"issuer" env:"ISSUER"`
+
+	// AllowedOrigins are the web origins whose pages may read discovery, the keys and the token
+	// endpoint from script. A single-page application never shares an origin with its provider.
+	AllowedOrigins []string `yaml:"allowed_origins" env:"ALLOWED_ORIGINS" envSeparator:","`
+
+	// SessionLifetime is how long one sign-in is good for however active; SessionIdle is how
+	// long it survives unused. The session is the whole point: without it every application
+	// asks for a password again.
+	SessionLifetime time.Duration `yaml:"session_lifetime" env:"SESSION_LIFETIME" envDefault:"12h"`
+	SessionIdle     time.Duration `yaml:"session_idle" env:"SESSION_IDLE" envDefault:"2h"`
+
+	// CodeLifetime bounds an authorization code and an unfinished sign-in; TokenLifetime bounds
+	// an issued token.
+	CodeLifetime  time.Duration `yaml:"code_lifetime" env:"CODE_LIFETIME" envDefault:"5m"`
+	TokenLifetime time.Duration `yaml:"token_lifetime" env:"TOKEN_LIFETIME" envDefault:"1h"`
+
+	Clients []OIDCClient `yaml:"clients"`
+}
+
 // Behaviors carries the policy knobs that bound password guessing and directory reads.
 type Behaviors struct {
 	IgnoreCapabilities    bool          `yaml:"ignore_capabilities" env:"IGNORE_CAPABILITIES"`
@@ -231,6 +276,7 @@ type Config struct {
 	KPasswd   KPasswd   `yaml:"kpasswd" envPrefix:"KPASSWD_"`
 	DNS       DNS       `yaml:"dns" envPrefix:"DNS_"`
 	API       API       `yaml:"api" envPrefix:"API_"`
+	OIDC      OIDC      `yaml:"oidc" envPrefix:"OIDC_"`
 	Bootstrap Bootstrap `yaml:"bootstrap" envPrefix:"BOOTSTRAP_"`
 	Behaviors Behaviors `yaml:"behaviors" envPrefix:"BEHAVIORS_"`
 
@@ -389,6 +435,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateOIDC(); err != nil {
+		return err
+	}
+
 	// A named plan that cannot be read is a start-up failure waiting to happen, so it is caught
 	// here where --check-config will find it.
 	if len(c.Bootstrap.File) > 0 {
@@ -398,6 +448,39 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateKerberos()
+}
+
+// validateOIDC checks the provider's own settings — the ones whose absence would only surface at
+// somebody's first sign-in.
+func (c *Config) validateOIDC() error {
+	if !c.OIDC.Enabled {
+		return nil
+	}
+	if len(c.OIDC.Issuer) == 0 {
+		return errors.New("oidc.issuer is required: it is what lands in every token and what the browser must reach")
+	}
+	u, err := url.Parse(c.OIDC.Issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("oidc.issuer %q must be an absolute URL", c.OIDC.Issuer)
+	}
+	// Discovery hangs off the issuer and every verifier compares it to the iss claim byte for
+	// byte, so a trailing slash is the difference between agreeing and not.
+	if strings.HasSuffix(c.OIDC.Issuer, "/") {
+		return fmt.Errorf("oidc.issuer %q must not end in a slash", c.OIDC.Issuer)
+	}
+	if len(c.OIDC.Clients) == 0 {
+		return errors.New("oidc.clients is empty: nothing could obtain a token")
+	}
+	for _, cl := range c.OIDC.Clients {
+		if len(cl.ID) == 0 {
+			return errors.New("every oidc client needs an id")
+		}
+		if len(cl.RedirectURIs) == 0 {
+			return fmt.Errorf("oidc client %q has no redirect_uris, so it could never be sent an answer", cl.ID)
+		}
+	}
+
+	return nil
 }
 
 // validateListeners checks that every enabled listener has a usable address.
@@ -413,6 +496,7 @@ func (c *Config) validateListeners() error {
 		{c.KPasswd.Enabled, "kpasswd.listen", c.KPasswd.Listen},
 		{c.DNS.Enabled, "dns.listen", c.DNS.Listen},
 		{c.API.Enabled, "api.listen", c.API.Listen},
+		{c.OIDC.Enabled, "oidc.listen", c.OIDC.Listen},
 	} {
 		if !l.enabled {
 			continue
@@ -436,6 +520,7 @@ func (c *Config) validateTLS() error {
 		{c.LDAP.Enabled && c.LDAP.TLS, "ldap", c.LDAP.CertPath, c.LDAP.KeyPath},
 		{c.LDAPS.Enabled, "ldaps", c.LDAPS.CertPath, c.LDAPS.KeyPath},
 		{c.API.Enabled && c.API.TLS, "api", c.API.CertPath, c.API.KeyPath},
+		{c.OIDC.Enabled && c.OIDC.TLS, "oidc", c.OIDC.CertPath, c.OIDC.KeyPath},
 	} {
 		if !t.enabled {
 			continue

@@ -18,6 +18,7 @@ type Metrics struct {
 	KDCTicketsIssued *prometheus.CounterVec
 	KPasswdRequests  *prometheus.CounterVec
 	APIRequests      *prometheus.CounterVec
+	OIDCRequests     *prometheus.CounterVec
 	DNSQueries       *prometheus.CounterVec
 	DNSDuration      prometheus.Histogram
 }
@@ -62,6 +63,10 @@ func New() *Metrics {
 			Name: "api_requests_total",
 			Help: "REST API requests by method, route and status.",
 		}, []string{"method", "route", "status"}),
+		OIDCRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "oidc_requests_total",
+			Help: "OpenID Connect operations by kind and result.",
+		}, []string{"operation", "result"}),
 		DNSQueries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "dns_queries_total",
 			Help: "DNS queries by record type and response code.",
@@ -78,7 +83,7 @@ func New() *Metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.LDAPBinds, m.LDAPSearches, m.LDAPDuration,
 		m.KDCRequests, m.KDCDuration, m.KDCTicketsIssued,
-		m.KPasswdRequests, m.APIRequests, m.DNSQueries, m.DNSDuration,
+		m.KPasswdRequests, m.APIRequests, m.OIDCRequests, m.DNSQueries, m.DNSDuration,
 	)
 
 	return m

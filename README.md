@@ -56,6 +56,26 @@ reverse answers derived from those address records rather than kept as a second 
 authoritative only; a name outside the configured zones is refused rather than resolved, so the
 service cannot become an open resolver.
 
+**OpenID Connect** — the same accounts, served to browsers, so that one sign-in reaches every
+interface in front of this directory. The authorization code flow with PKCE for public clients:
+discovery, JWKS, `/auth`, `/token`, `/userinfo` and `/end-session`.
+
+What it is FOR is the session. A provider that keeps none makes every application ask for a
+password again, however recently the person typed one — and no application can mend that from its
+own side, because the prompt is not its own. Here a sign-in sets a cookie, and the next
+application's authorization completes without a form; `prompt=login` overrides it, `prompt=none`
+refuses rather than asking, and `/end-session` ends it for everything at once, which is what makes
+a logout button mean something.
+
+The credential is decided by the same code as an LDAP bind — password, one-time code appended,
+application passwords, disabled accounts — because two doors that decide credentials separately are
+two doors that eventually disagree. Tokens carry the account's name as `sub`, its mail address, its
+display name and its groups, resolved transitively exactly as a Kerberos PAC resolves them.
+
+A client id may be any string. An id token's audience IS the client id, so a deployment that
+identifies its services by URL should register the service's URL as the id; the service then checks
+"is this token for me" against the name it already knows itself by.
+
 **REST** — the management surface, plus `/healthz`, `/readyz` and Prometheus `/metrics`.
 
 ## Getting started

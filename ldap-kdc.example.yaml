@@ -162,6 +162,46 @@ api:
   # the management port is reachable more widely than its administrators.
   docs: true
 
+# The OpenID Connect provider: the directory's accounts, served to browsers, so that ONE sign-in
+# reaches every interface in front of it. A provider that keeps no browser session makes each of
+# them ask for a password again, however recently the person typed one.
+oidc:
+  enabled: false
+  listen: 127.0.0.1:5557
+  tls: false
+  # cert_path: /etc/ldap-kdc/oidc.crt
+  # key_path: /etc/ldap-kdc/oidc.key
+
+  # What lands in every token's `iss` and what the BROWSER must reach — the public address, which
+  # behind a proxy is not the address above. No trailing slash: a verifier compares it to the iss
+  # claim byte for byte.
+  # issuer: https://auth.example.com
+
+  # The web origins whose pages may read discovery, the keys and the token endpoint from script.
+  # A single-page application never shares an origin with its provider, so without this it can
+  # read none of them.
+  allowed_origins:
+    - https://app.example.com
+
+  # How long one sign-in is good for however active, and how long it survives unused.
+  session_lifetime: 12h
+  session_idle: 2h
+  # An authorization code and an unfinished sign-in; and an issued token.
+  code_lifetime: 5m
+  token_lifetime: 1h
+
+  # The relying parties. The id may be any string — an id token's audience IS the client id, so a
+  # deployment that identifies its services by URL should use the service's URL, and the service
+  # checking "is this token for me" then compares against exactly that. A redirect URI is matched
+  # WHOLE: prefix matching is how a redirect turns into an open redirect.
+  clients:
+    - id: https://app.example.com
+      name: The application
+      redirect_uris:
+        - https://app.example.com/
+      post_logout_redirect_uris:
+        - https://app.example.com/
+
 # A directory described in advance, applied on start-up. Meant for continuous integration, test
 # stands and development containers; see bootstrap.example.yaml. Leave the path empty in production
 # and provision through the API instead.

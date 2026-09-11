@@ -27,6 +27,7 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/ldapsrv"
 	"github.com/shulutkov/ldap-kdc/internal/logging"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
+	"github.com/shulutkov/ldap-kdc/internal/oidc"
 	"github.com/shulutkov/ldap-kdc/internal/secret"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 	"github.com/shulutkov/ldap-kdc/internal/tlsutil"
@@ -276,6 +277,44 @@ func run(cfg *config.Config) error {
 			return err
 		}
 		services = append(services, service{"api", srv.Shutdown})
+	}
+
+	if cfg.OIDC.Enabled {
+		var oidcTLS *tls.Config
+		if cfg.OIDC.TLS {
+			if oidcTLS, err = tlsutil.Load(cfg.OIDC.CertPath, cfg.OIDC.KeyPath); err != nil {
+				return err
+			}
+		}
+
+		clients := make([]oidc.Client, 0, len(cfg.OIDC.Clients))
+		for _, c := range cfg.OIDC.Clients {
+			clients = append(clients, oidc.Client{
+				ID:                 c.ID,
+				Name:               c.Name,
+				RedirectURIs:       c.RedirectURIs,
+				PostLogoutRedirect: c.PostLogoutRedirect,
+			})
+		}
+
+		srv, err := oidc.New(ctx, oidc.Config{
+			Listen:          cfg.OIDC.Listen,
+			TLS:             oidcTLS,
+			Issuer:          cfg.OIDC.Issuer,
+			AllowedOrigins:  cfg.OIDC.AllowedOrigins,
+			Clients:         clients,
+			SessionLifetime: cfg.OIDC.SessionLifetime,
+			SessionIdle:     cfg.OIDC.SessionIdle,
+			CodeLifetime:    cfg.OIDC.CodeLifetime,
+			TokenLifetime:   cfg.OIDC.TokenLifetime,
+		}, st, log, m)
+		if err != nil {
+			return err
+		}
+		if err := srv.Start(ctx); err != nil {
+			return err
+		}
+		services = append(services, service{"oidc", srv.Shutdown})
 	}
 
 	if len(services) == 0 {
