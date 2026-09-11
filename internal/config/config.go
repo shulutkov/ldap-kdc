@@ -249,6 +249,12 @@ type OIDC struct {
 	CodeLifetime  time.Duration `yaml:"code_lifetime" env:"CODE_LIFETIME" envDefault:"5m"`
 	TokenLifetime time.Duration `yaml:"token_lifetime" env:"TOKEN_LIFETIME" envDefault:"1h"`
 
+	// ServiceAccountGroup names the directory group whose members may use the client credentials
+	// grant — a service account asking for a token with its own name and password, no person
+	// involved. Empty turns the grant off entirely, which is the right default: without a gate
+	// every person's password would double as a machine key.
+	ServiceAccountGroup string `yaml:"service_account_group" env:"SERVICE_ACCOUNT_GROUP"`
+
 	Clients []OIDCClient `yaml:"clients"`
 }
 

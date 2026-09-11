@@ -209,17 +209,26 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 // page types the address they know themselves by — and mail is what the deployment's services read
 // as the subject claim.
 func (s *Server) check(ctx context.Context, login, password string) (store.Outcome, string) {
-	if login == "" {
+	u := s.lookup(ctx, login)
+	if u == nil {
 		return store.OutcomeInvalid, ""
-	}
-	u, err := s.st.GetUser(ctx, login)
-	if err != nil {
-		if u = s.userByMail(ctx, login); u == nil {
-			return store.OutcomeInvalid, ""
-		}
 	}
 
 	return store.Authenticate(u, password), u.Name
+}
+
+// lookup resolves a login to an account by name or by mail address. Shared with the client
+// credentials grant, where the same two spellings are the ones a service account will be
+// configured with.
+func (s *Server) lookup(ctx context.Context, login string) *store.User {
+	if login == "" {
+		return nil
+	}
+	if u, err := s.st.GetUser(ctx, login); err == nil {
+		return u
+	}
+
+	return s.userByMail(ctx, login)
 }
 
 // userByMail finds an account by its mail address. A miss is not an error here: the caller has

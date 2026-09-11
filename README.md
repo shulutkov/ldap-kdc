@@ -7,6 +7,33 @@ credentials are written from the same password in the same transaction. That is 
 service: the two protocols normally need two different secrets, and keeping them in step by hand is
 where directory deployments go wrong.
 
+## For testing, not for production
+
+This is a directory for **test stands, continuous integration and development** — somewhere to get
+a realm, accounts and tokens in one process and one file, so that what is being tested is the thing
+under test and not the identity infrastructure around it. It is not a production directory, and the
+list below is what to weigh before treating it as one rather than a to-do list that ends.
+
+- **One process, one file, no replication.** The database is SQLite on local disk. There is no
+  second copy, no failover and no backup but the one you take: every account and every key is in
+  that file, and losing it loses the realm.
+- **No audit trail worth the name.** Operations are logged; there is no tamper-evident record, no
+  retention policy and nothing to answer "who changed this, when" after the fact.
+- **The master key sits beside what it protects.** Key material is sealed with AES-256-GCM under a
+  key in a file on the same disk. That defeats a stolen database; it does not defeat a stolen host,
+  and there is no HSM or KMS behind it.
+- **The management API is a bearer token.** One token, no scopes, no rotation, no per-administrator
+  identity — and it can change any account's password.
+- **The bootstrap plan carries passwords in clear text.** It exists to stand a realm up
+  reproducibly, which is the opposite of what a production credential wants.
+- **Not audited, and young.** The Kerberos, LDAP and OIDC sides are implemented here rather than
+  taken from an established library. They are tested, they interoperate with the standard clients,
+  and they have not been through anybody's security review.
+
+Where a directory has to survive people, hardware and time, use one built for it — FreeIPA, Samba
+AD, 389-ds, Active Directory — and let this one do what it is good at: being the whole of an
+identity realm in one binary that starts in a second and is thrown away afterwards.
+
 ## Why one store is not optional
 
 An LDAP simple bind compares a password against an irreversible digest. Kerberos cannot do that: to
@@ -58,7 +85,8 @@ service cannot become an open resolver.
 
 **OpenID Connect** — the same accounts, served to browsers, so that one sign-in reaches every
 interface in front of this directory. The authorization code flow with PKCE for public clients:
-discovery, JWKS, `/auth`, `/token`, `/userinfo` and `/end-session`.
+discovery, JWKS, `/auth`, `/token`, `/userinfo` and `/end-session`; and the client credentials
+grant for service accounts.
 
 What it is FOR is the session. A provider that keeps none makes every application ask for a
 password again, however recently the person typed one — and no application can mend that from its
@@ -75,6 +103,17 @@ display name and its groups, resolved transitively exactly as a Kerberos PAC res
 A client id may be any string. An id token's audience IS the client id, so a deployment that
 identifies its services by URL should register the service's URL as the id; the service then checks
 "is this token for me" against the name it already knows itself by.
+
+**A service account is an account here too.** With `oidc.service_account_group` set, a member of
+that group may ask for a token in its own name — client id is the account, client secret is its
+password — and the same `store.Authenticate` decides it, so an application password works and a
+disabled account gets nothing. Three things are narrow on purpose: membership is the switch, and
+with no group configured the grant is refused outright, because otherwise every person's password
+would quietly double as a machine key; the audience is required and must be a resource this
+provider serves (`resource=<uri>`, RFC 8707), since a token naming nobody is a token for everybody;
+and the subject carries its kind — `client:<name>` — so a consumer can tell a robot from a person
+without guessing, and a rule written about people does not match a machine. No id token is issued
+and no session cookie is set: nobody signed in, and a machine has no browser.
 
 **REST** — the management surface, plus `/healthz`, `/readyz` and Prometheus `/metrics`.
 
@@ -140,6 +179,32 @@ curl -s -X POST $API/principals -H "$AUTH" -H 'Content-Type: application/json' \
 
 curl -s $API/principals/HTTP/www.example.com/keytab -H "$AUTH" -o http.keytab
 ```
+
+### A service account with an OIDC token
+
+A machine that speaks OIDC rather than Kerberos asks in its own name. Set
+`oidc.service_account_group`, put the account in that group, and it may exchange its password for a
+token addressed to one of the registered resources:
+
+```sh
+curl -s -X POST $API/groups -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name": "service-accounts", "gidNumber": 5100}'
+
+curl -s -X POST $API/users -H "$AUTH" -H 'Content-Type: application/json' -d '{
+  "name": "reporter", "primaryGroup": 5000, "otherGroups": [5100],
+  "password": "a sufficiently long password"
+}'
+
+curl -s -X POST https://auth.example.com/token \
+  -u 'reporter:a sufficiently long password' \
+  -d grant_type=client_credentials \
+  --data-urlencode 'resource=https://api.example.com'
+```
+
+The token that comes back has `sub` of `client:reporter`, the account's groups, and
+`aud` of the resource that was asked for. Give the machine an **application password** rather than
+the account's own (`POST $API/users/reporter/app-passwords`) and it can be withdrawn on its own,
+without touching anything else the account does.
 
 ## REST reference
 

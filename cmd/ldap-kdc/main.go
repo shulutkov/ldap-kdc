@@ -298,15 +298,16 @@ func run(cfg *config.Config) error {
 		}
 
 		srv, err := oidc.New(ctx, oidc.Config{
-			Listen:          cfg.OIDC.Listen,
-			TLS:             oidcTLS,
-			Issuer:          cfg.OIDC.Issuer,
-			AllowedOrigins:  cfg.OIDC.AllowedOrigins,
-			Clients:         clients,
-			SessionLifetime: cfg.OIDC.SessionLifetime,
-			SessionIdle:     cfg.OIDC.SessionIdle,
-			CodeLifetime:    cfg.OIDC.CodeLifetime,
-			TokenLifetime:   cfg.OIDC.TokenLifetime,
+			Listen:              cfg.OIDC.Listen,
+			TLS:                 oidcTLS,
+			Issuer:              cfg.OIDC.Issuer,
+			AllowedOrigins:      cfg.OIDC.AllowedOrigins,
+			Clients:             clients,
+			ServiceAccountGroup: cfg.OIDC.ServiceAccountGroup,
+			SessionLifetime:     cfg.OIDC.SessionLifetime,
+			SessionIdle:         cfg.OIDC.SessionIdle,
+			CodeLifetime:        cfg.OIDC.CodeLifetime,
+			TokenLifetime:       cfg.OIDC.TokenLifetime,
 		}, st, log, m)
 		if err != nil {
 			return err

@@ -16,8 +16,17 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	if r.Form.Get("grant_type") != "authorization_code" {
-		s.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "only authorization_code is served")
+	switch r.Form.Get("grant_type") {
+	case "authorization_code":
+	case "client_credentials":
+		// A service account asking for a token in its own name. Nobody signed in, so nothing here
+		// applies — a different function entirely.
+		s.clientCredentials(w, r)
+
+		return
+	default:
+		s.tokenError(w, http.StatusBadRequest, "unsupported_grant_type",
+			"authorization_code and client_credentials are served")
 
 		return
 	}

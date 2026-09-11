@@ -190,6 +190,11 @@ oidc:
   code_lifetime: 5m
   token_lifetime: 1h
 
+  # Service accounts: the group whose members may ask for a token with their own name and password
+  # (the client credentials grant), no person involved. Empty turns the grant off, which is the
+  # right default — without a gate every person's password would double as a machine key.
+  # service_account_group: service-accounts
+
   # The relying parties. The id may be any string — an id token's audience IS the client id, so a
   # deployment that identifies its services by URL should use the service's URL, and the service
   # checking "is this token for me" then compares against exactly that. A redirect URI is matched

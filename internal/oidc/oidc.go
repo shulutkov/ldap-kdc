@@ -57,6 +57,10 @@ type Config struct {
 
 	Clients []Client
 
+	// ServiceAccountGroup is the directory group whose members may use the client credentials
+	// grant. Empty refuses the grant outright.
+	ServiceAccountGroup string
+
 	SessionLifetime time.Duration
 	SessionIdle     time.Duration
 	CodeLifetime    time.Duration

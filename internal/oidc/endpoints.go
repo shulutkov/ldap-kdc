@@ -18,7 +18,7 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 		"jwks_uri":                              s.cfg.Issuer + pathKeys,
 		"end_session_endpoint":                  s.cfg.Issuer + pathEndAuth,
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 s.grants(),
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"ES256"},
 		"scopes_supported":                      []string{"openid", "profile", "email", "groups"},
@@ -26,9 +26,28 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce",
 			"email", "email_verified", "name", "groups",
 		},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported": s.clientAuth(),
 		"code_challenge_methods_supported":      []string{"S256"},
 	})
+}
+
+// grants and clientAuth describe what this provider actually does, which depends on whether a
+// service account group is configured: advertising a grant that is switched off sends a client to
+// an endpoint that will refuse it, and discovery is supposed to spare them that.
+func (s *Server) grants() []string {
+	if s.cfg.ServiceAccountGroup == "" {
+		return []string{"authorization_code"}
+	}
+
+	return []string{"authorization_code", "client_credentials"}
+}
+
+func (s *Server) clientAuth() []string {
+	if s.cfg.ServiceAccountGroup == "" {
+		return []string{"none"}
+	}
+
+	return []string{"none", "client_secret_basic", "client_secret_post"}
 }
 
 // keys publishes the public half of the signing key.
