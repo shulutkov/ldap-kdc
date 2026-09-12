@@ -77,7 +77,8 @@ ou=staff,ou=groups,dc=example,dc=com             a group
 **kpasswd (RFC 3244)** — users change their own password with the standard tool, and both
 credential forms move together.
 
-**DNS** — an authoritative name server for the realm's zone: SOA and NS at the apex, the service
+**DNS** — an authoritative name server for the realm's zone, and for any further forward zone named
+in `dns.extra_zones`: SOA and NS at the apex, the service
 discovery records Kerberos clients look for, address records managed through the REST API, and
 reverse answers derived from those address records rather than kept as a second copy. It is
 authoritative only; a name outside the configured zones is refused rather than resolved, so the

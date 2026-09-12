@@ -236,6 +236,7 @@ func run(cfg *config.Config) error {
 			Listen:       cfg.DNS.Listen,
 			Realm:        cfg.Server.Realm,
 			Zone:         cfg.DNS.Zone,
+			ExtraZones:   cfg.DNS.ExtraZones,
 			ReverseZones: cfg.DNS.ReverseZones,
 			Hostname:     cfg.DNS.Hostname,
 			Addresses:    cfg.DNS.Addresses,
@@ -420,7 +421,9 @@ func servedZones(cfg *config.Config) []string {
 		return nil
 	}
 
-	return append([]string{cfg.DNS.Zone}, cfg.DNS.ReverseZones...)
+	zones := append([]string{cfg.DNS.Zone}, cfg.DNS.ExtraZones...)
+
+	return append(zones, cfg.DNS.ReverseZones...)
 }
 
 // listenPort extracts the port from a listen address, or zero when it has none.

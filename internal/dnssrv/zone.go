@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +33,17 @@ type Config struct {
 	// Realm is the Kerberos realm, published in the _kerberos TXT record so a client can
 	// discover it from its domain name alone.
 	Realm string
-	// Zone is the forward zone, normally the realm's domain in lower case.
+	// Zone is the PRIMARY forward zone, normally the realm's domain in lower case. It is the one
+	// the realm's own discovery records live in.
 	Zone string
+	// ExtraZones are further forward zones this server answers for, and they carry no discovery
+	// records of their own — only what was put in them.
+	//
+	// They exist because a deployment's public names are usually not its realm's: a stand reached
+	// at gitkeep.ru has a realm called STAND.LOCAL, and until something answers for the public
+	// name, that name is a convention in one client's hosts file rather than a fact of the
+	// deployment. Which shows up the first time a SERVICE rather than a browser has to reach it.
+	ExtraZones []string
 	// ReverseZones are the in-addr.arpa and ip6.arpa zones this server answers for. Without
 	// one, reverse lookups fall to whatever else the network runs, and a Kerberos client that
 	// canonicalises host names through reverse DNS will ask for the wrong service principal.
@@ -110,14 +120,23 @@ func (s *Server) generated(name string) []dns.RR {
 	host := dns.Fqdn(s.cfg.Hostname)
 	ttl := uint32(s.cfg.TTL / time.Second)
 
-	switch name {
-	case s.cfg.Zone:
-		out = append(out, s.soa(), &dns.NS{
+	switch {
+	case name == s.cfg.Zone:
+		out = append(out, s.soa(s.cfg.Zone), &dns.NS{
 			Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
 			Ns:  host,
 		})
 
-	case s.cfg.Hostname:
+	// An extra zone gets an apex too — a zone without one is not a zone, and a resolver asking for
+	// its SOA is entitled to an answer — but nothing else: the discovery records belong to the
+	// realm, and publishing them under a second name would advertise a second realm.
+	case slices.Contains(s.cfg.ExtraZones, name):
+		out = append(out, s.soa(name), &dns.NS{
+			Hdr: dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
+			Ns:  host,
+		})
+
+	case name == s.cfg.Hostname:
 		for _, a := range s.cfg.Addresses {
 			addr, err := netip.ParseAddr(a)
 			if err != nil {
@@ -135,7 +154,7 @@ func (s *Server) generated(name string) []dns.RR {
 			}
 		}
 
-	case "_kerberos." + s.cfg.Zone:
+	case name == "_kerberos."+s.cfg.Zone:
 		// RFC 4120 section 7.2.3: a client that knows only its domain finds the realm here.
 		out = append(out, &dns.TXT{
 			Hdr: dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: ttl},
@@ -171,12 +190,12 @@ func (s *Server) generated(name string) []dns.RR {
 
 // soa builds the zone's start of authority. The serial follows the newest record change, so a
 // secondary comparing serials sees the zone move when its contents do.
-func (s *Server) soa() *dns.SOA {
+func (s *Server) soa(zone string) *dns.SOA {
 	ttl := uint32(s.cfg.TTL / time.Second)
 
 	return &dns.SOA{
 		Hdr: dns.RR_Header{
-			Name: dns.Fqdn(s.cfg.Zone), Rrtype: dns.TypeSOA,
+			Name: dns.Fqdn(zone), Rrtype: dns.TypeSOA,
 			Class: dns.ClassINET, Ttl: ttl,
 		},
 		Ns:      dns.Fqdn(s.cfg.Hostname),

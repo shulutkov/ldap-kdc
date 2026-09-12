@@ -29,7 +29,7 @@ type harness struct {
 	addr  string
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*Config)) *harness {
 	t.Helper()
 
 	ctx := context.Background()
@@ -56,7 +56,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	srv, err := New(Config{
+	cfg := Config{
 		Listen:       "127.0.0.1:0",
 		Realm:        testRealm,
 		Zone:         testZone,
@@ -69,7 +69,12 @@ func newHarness(t *testing.T) *harness {
 			{Names: []string{"_kpasswd._udp"}, Port: 464},
 			{Names: []string{"_ldap._tcp"}, Port: 389},
 		},
-	}, st, log, metrics.New())
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	srv, err := New(cfg, st, log, metrics.New())
 	if err != nil {
 		t.Fatalf("server: %v", err)
 	}
@@ -374,4 +379,60 @@ func TestRecordValidation(t *testing.T) {
 			t.Errorf("%s: accepted, want a rejection", tc.name)
 		}
 	}
+}
+
+// A deployment's public names are usually not its realm's, and until something answers for them
+// such a name is a convention in one client's hosts file rather than a fact of the deployment.
+func TestExtraForwardZones(t *testing.T) {
+	h := newHarness(t, func(c *Config) {
+		c.ExtraZones = []string{"gitkeep.ru"}
+	})
+
+	t.Run("a name in the extra zone is answered", func(t *testing.T) {
+		h.addRecord(t, "auth.gitkeep.ru", "A", "192.168.0.116")
+		got := h.ask(t, "auth.gitkeep.ru.", dns.TypeA)
+		if got.Rcode != dns.RcodeSuccess || len(got.Answer) != 1 {
+			t.Fatalf("rcode %s, %d answers", dns.RcodeToString[got.Rcode], len(got.Answer))
+		}
+		if a, ok := got.Answer[0].(*dns.A); !ok || a.A.String() != "192.168.0.116" {
+			t.Errorf("answer = %v", got.Answer[0])
+		}
+	})
+
+	// A zone without an apex is not a zone, and a resolver asking for its SOA is entitled to one.
+	t.Run("the extra zone has an apex", func(t *testing.T) {
+		got := h.ask(t, "gitkeep.ru.", dns.TypeSOA)
+		if got.Rcode != dns.RcodeSuccess || len(got.Answer) == 0 {
+			t.Fatalf("rcode %s, %d answers", dns.RcodeToString[got.Rcode], len(got.Answer))
+		}
+		if soa, ok := got.Answer[0].(*dns.SOA); !ok || soa.Hdr.Name != "gitkeep.ru." {
+			t.Errorf("SOA names %v", got.Answer[0])
+		}
+	})
+
+	// The realm's discovery records belong to the realm. Publishing them under a second name would
+	// advertise a second realm.
+	t.Run("it carries no discovery records of the realm", func(t *testing.T) {
+		if got := h.ask(t, "_kerberos.gitkeep.ru.", dns.TypeTXT); len(got.Answer) != 0 {
+			t.Errorf("the extra zone advertises the realm: %v", got.Answer)
+		}
+	})
+
+	// Still not a resolver: a name in neither zone is refused rather than followed.
+	t.Run("anything else is still refused", func(t *testing.T) {
+		if got := h.ask(t, "somewhere.else.test.", dns.TypeA); got.Rcode != dns.RcodeRefused {
+			t.Errorf("rcode = %s, want REFUSED", dns.RcodeToString[got.Rcode])
+		}
+	})
+
+	// A miss inside the extra zone is cached against ITS authority, not the realm's.
+	t.Run("a miss names the zone it missed in", func(t *testing.T) {
+		got := h.ask(t, "nothing.gitkeep.ru.", dns.TypeA)
+		if got.Rcode != dns.RcodeNameError || len(got.Ns) != 1 {
+			t.Fatalf("rcode %s, %d authority records", dns.RcodeToString[got.Rcode], len(got.Ns))
+		}
+		if soa, ok := got.Ns[0].(*dns.SOA); !ok || soa.Hdr.Name != "gitkeep.ru." {
+			t.Errorf("authority = %v, want the gitkeep.ru SOA", got.Ns[0])
+		}
+	})
 }

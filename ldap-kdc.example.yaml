@@ -128,6 +128,14 @@ dns:
 
   # Reverse zones answered for. Reverse answers are derived from the address records, so there are
   # no PTR records to create or keep in step.
+  # Further forward zones this server answers for. They carry none of the realm's discovery records
+  # — only what is put in them — and exist because a deployment's PUBLIC names are usually not its
+  # realm's: until something answers for such a name, it is a convention in one client's hosts file
+  # rather than a fact of the deployment, which shows the first time a SERVICE rather than a browser
+  # has to reach it.
+  # extra_zones:
+  #   - example.net
+
   reverse_zones:
     - 2.0.192.in-addr.arpa
 

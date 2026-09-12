@@ -159,6 +159,12 @@ type DNS struct {
 	// Zone is the forward zone served. It defaults to the server's domain.
 	Zone string `yaml:"zone" env:"ZONE"`
 
+	// ExtraZones are further forward zones this server answers for. They carry no discovery
+	// records of their own — only what is put in them — and exist because a deployment's PUBLIC
+	// names are usually not its realm's: until something answers for them, such a name is a
+	// convention in one client's hosts file rather than a fact of the deployment.
+	ExtraZones []string `yaml:"extra_zones" env:"EXTRA_ZONES" envSeparator:","`
+
 	// ReverseZones are the in-addr.arpa and ip6.arpa zones this server answers for. Reverse
 	// answers are derived from the address records, so no PTR records need maintaining.
 	ReverseZones []string `yaml:"reverse_zones" env:"REVERSE_ZONES"`

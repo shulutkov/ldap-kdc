@@ -178,7 +178,7 @@ func (s *Server) answer(ctx context.Context, r *dns.Msg) *dns.Msg {
 		s.answerReverse(ctx, m, name, zone, q.Qtype)
 
 	default:
-		s.answerForward(ctx, m, name, q.Qtype)
+		s.answerForward(ctx, m, name, zone, q.Qtype)
 	}
 
 	return m
@@ -188,6 +188,12 @@ func (s *Server) answer(ctx context.Context, r *dns.Msg) *dns.Msg {
 func (s *Server) zoneFor(name string) (zone string, reverse bool) {
 	if inZone(name, s.cfg.Zone) {
 		return s.cfg.Zone, false
+	}
+
+	for _, z := range s.cfg.ExtraZones {
+		if inZone(name, z) {
+			return z, false
+		}
 	}
 
 	for _, z := range s.cfg.ReverseZones {
@@ -204,12 +210,16 @@ func inZone(name, zone string) bool {
 }
 
 // answerForward fills in a reply from the forward zone.
-func (s *Server) answerForward(ctx context.Context, m *dns.Msg, name string, qtype uint16) {
+//
+// The authority section names the zone the QUESTION fell in, not the primary one: a resolver
+// caching a negative answer caches it against the SOA it was given, and handing it the wrong zone's
+// would have it cache the miss under a name nobody asked about.
+func (s *Server) answerForward(ctx context.Context, m *dns.Msg, name, zone string, qtype uint16) {
 	records := s.records(ctx, name)
 
 	if len(records) == 0 {
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{s.soa()}
+		m.Ns = []dns.RR{s.soa(zone)}
 
 		return
 	}
@@ -219,16 +229,23 @@ func (s *Server) answerForward(ctx context.Context, m *dns.Msg, name string, qty
 	if len(m.Answer) == 0 {
 		// A name that exists without the type asked for is an empty answer, not a missing
 		// name, and the difference is what lets a resolver cache the right thing.
-		m.Ns = []dns.RR{s.soa()}
+		m.Ns = []dns.RR{s.soa(zone)}
 	}
 }
 
 // answerReverse fills in a reply from a reverse zone.
 func (s *Server) answerReverse(ctx context.Context, m *dns.Msg, name, zone string, qtype uint16) {
+	authority := func() []dns.RR {
+		soa := s.soa(s.cfg.Zone)
+		soa.Hdr.Name = dns.Fqdn(zone)
+
+		return []dns.RR{soa}
+	}
+
 	if name == zone {
 		m.Answer = matching(s.reverseApex(zone), qtype)
 		if len(m.Answer) == 0 {
-			m.Ns = []dns.RR{s.soa()}
+			m.Ns = authority()
 		}
 
 		return
@@ -238,7 +255,7 @@ func (s *Server) answerReverse(ctx context.Context, m *dns.Msg, name, zone strin
 
 	if len(records) == 0 {
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{s.soa()}
+		m.Ns = authority()
 
 		return
 	}
@@ -246,13 +263,13 @@ func (s *Server) answerReverse(ctx context.Context, m *dns.Msg, name, zone strin
 	m.Answer = matching(records, qtype)
 
 	if len(m.Answer) == 0 {
-		m.Ns = []dns.RR{s.soa()}
+		m.Ns = authority()
 	}
 }
 
 // reverseApex is the authority data at the top of a reverse zone.
 func (s *Server) reverseApex(zone string) []dns.RR {
-	soa := s.soa()
+	soa := s.soa(s.cfg.Zone)
 	soa.Hdr.Name = dns.Fqdn(zone)
 
 	return []dns.RR{soa, &dns.NS{
