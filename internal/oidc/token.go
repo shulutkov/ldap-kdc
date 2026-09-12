@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -36,7 +37,12 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 	// Which client is exchanging, and whether it proved it. A confidential client's secret is
 	// checked BEFORE the code is spent: a wrong secret must not burn somebody else's code.
-	if err := s.authenticateClient(r); err != nil {
+	//
+	// The ID it returns is the one every later check uses, and that is the point: a client
+	// authenticating with Basic sends no client_id field at all, so a comparison against the form
+	// would read an empty string and refuse the exchange as somebody else's code.
+	clientID, err := s.authenticateClient(r)
+	if err != nil {
 		s.result("token", "bad-client-secret")
 		s.tokenError(w, http.StatusUnauthorized, "invalid_client", err.Error())
 
@@ -54,7 +60,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	// code was bound to it; the client because a code issued to one client must not be
 	// exchangeable by another.
 	switch {
-	case r.Form.Get("client_id") != code.clientID:
+	case clientID != code.clientID:
 		s.result("token", "wrong-client")
 		s.tokenError(w, http.StatusBadRequest, "invalid_grant", "this code was issued to another client")
 
@@ -125,31 +131,52 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 // present it, however the request was shaped, and one configured without cannot be authenticated
 // by a secret it does not have. A request that carries a secret for a public client is refused
 // rather than ignored — it means somebody believes in a credential that decides nothing.
-func (s *Server) authenticateClient(r *http.Request) error {
+func (s *Server) authenticateClient(r *http.Request) (string, error) {
 	id := strings.TrimSpace(r.Form.Get("client_id"))
 	secret := r.Form.Get("client_secret")
-	// HTTP Basic carries the two separated by a colon, so it cannot carry an id that CONTAINS one
-	// — and a deployment whose client ids are URLs has a colon in every one of them (RFC 7617
-	// forbids it in the userid outright). Such a client must use client_secret_post, and the
-	// refusal it gets otherwise says "unknown client" because that is literally what happened:
-	// everything before the first colon was read as the id.
-	if name, pass, ok := r.BasicAuth(); ok && !strings.Contains(name, "/") {
-		id, secret = name, pass
+	// HTTP Basic carries the two separated by a colon, so it cannot carry a raw id that CONTAINS
+	// one — and a deployment whose client ids are URLs has a colon in every one of them (RFC 7617
+	// forbids it in the userid outright). That is exactly why RFC 6749 §2.3.1 says both halves are
+	// FORM-URLENCODED before they go into Basic: encoded, a URL-shaped id carries no colon and no
+	// slash, and the scheme works for it like for any other.
+	//
+	// So the decode is not a nicety, it is the other half of the contract. Without it this server
+	// advertised client_secret_basic in its discovery document and then refused every client that
+	// believed it — a client library picks basic by default when it is offered, so the sign-in of
+	// the one confidential client on this stand failed with "unknown client" while its secret was
+	// correct and its authorize request was fine.
+	//
+	// Decoded ALWAYS, not on a guess. "+" means a space in this encoding, so a client that put a
+	// raw "+" in Basic instead of %2B is read as having sent a space — that ambiguity is the
+	// encoding's, and guessing per value ("decode only if it looks encoded") trades a rare
+	// out-of-spec client for a common one that followed the rule and would then fail.
+	if name, pass, ok := r.BasicAuth(); ok {
+		id, secret = formDecode(name), formDecode(pass)
 	}
 	client, known := s.client(id)
 	if !known {
-		return errors.New("unknown client")
+		return "", errors.New("unknown client")
 	}
 	switch {
 	case client.Secret == "" && secret != "":
-		return errors.New("this client is public and takes no secret")
+		return "", errors.New("this client is public and takes no secret")
 	case client.Secret == "":
-		return nil
+		return id, nil
 	case subtle.ConstantTimeCompare([]byte(client.Secret), []byte(secret)) != 1:
-		return errors.New("the client secret is wrong")
+		return "", errors.New("the client secret is wrong")
 	}
 
-	return nil
+	return id, nil
+}
+
+// formDecode undoes the encoding RFC 6749 §2.3.1 asks a client for, and leaves alone a value that
+// was never encoded.
+func formDecode(v string) string {
+	out, err := url.QueryUnescape(v)
+	if err != nil {
+		return v // not an encoding after all: judge the value as it arrived
+	}
+	return out
 }
 
 // mint signs one assertion about a subject for one audience.

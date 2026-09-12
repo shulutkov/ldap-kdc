@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/url"
 	"strings"
@@ -40,6 +41,29 @@ func (h *harness) exchangeWith(code, verifier string, basic bool, secret string)
 	return decode(h.T, res), res.StatusCode
 }
 
+// exchangeBasic trades a code for tokens with the credentials in an Authorization header, exactly
+// as the caller spelled them — which is the point: how they are spelled is what this tests.
+func (h *harness) exchangeBasic(code, verifier, id, secret string) (map[string]any, int) {
+	h.Helper()
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {theUI},
+		"code_verifier": {verifier},
+	}
+	req, err := http.NewRequest(http.MethodPost, h.http.URL+pathToken, strings.NewReader(form.Encode()))
+	if err != nil {
+		h.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(id+":"+secret)))
+	res, err := h.client.Do(req)
+	if err != nil {
+		h.Fatal(err)
+	}
+	return decode(h.T, res), res.StatusCode
+}
+
 // confidential turns the fixture's first client into one that keeps a secret.
 func confidential(h *harness) {
 	h.srv.cfg.Clients[0].Secret = clientSecret
@@ -59,6 +83,35 @@ func TestAConfidentialClientMustPresentItsSecret(t *testing.T) {
 		out, status := h.exchangeWith(code, verifier, false, clientSecret)
 		if status != http.StatusOK {
 			t.Fatalf("status %d: %v", status, out)
+		}
+	})
+
+	// And in Basic, which is what a client library reaches for first when the discovery document
+	// offers it. RFC 6749 §2.3.1 has both halves form-urlencoded before they go in, which is
+	// precisely what lets a URL-shaped id — a colon in every one of them — be carried at all.
+	// Without the matching decode on this side, the provider advertised the method and then
+	// refused every client that believed it, with "unknown client" while the secret was correct.
+	t.Run("with the secret, in Basic, encoded as the RFC asks", func(t *testing.T) {
+		h := setup(t)
+		confidential(h)
+		code := h.codeFrom(h.signIn(h.authorize(uiClient, theUI, verifier, nil), "alice", password))
+		out, status := h.exchangeBasic(code, verifier, url.QueryEscape(uiClient), url.QueryEscape(clientSecret))
+		if status != http.StatusOK {
+			t.Fatalf("client_secret_basic answered %d: %v", status, out)
+		}
+	})
+
+	// A secret with nothing to encode in it passes through the decode unchanged, so a client that
+	// did not encode is served too — as long as the value holds no "+" or "%", which in this
+	// encoding mean something else and cannot be told apart from themselves.
+	t.Run("with a plain secret in Basic", func(t *testing.T) {
+		h := setup(t)
+		confidential(h)
+		h.srv.cfg.Clients[0].Secret = "plainsecret"
+		code := h.codeFrom(h.signIn(h.authorize(uiClient, theUI, verifier, nil), "alice", password))
+		out, status := h.exchangeBasic(code, verifier, url.QueryEscape(uiClient), "plainsecret")
+		if status != http.StatusOK {
+			t.Fatalf("a secret sent unencoded answered %d: %v", status, out)
 		}
 	})
 
