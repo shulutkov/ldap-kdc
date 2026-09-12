@@ -36,8 +36,14 @@ import (
 // deployment whose services identify themselves by URL has to be able to say so here. Nothing is
 // issued to an id that is not listed, and nothing is redirected to a URI that is not.
 type Client struct {
-	ID                 string
-	Name               string
+	ID   string
+	Name string
+	// Secret makes this a CONFIDENTIAL client: one that runs on a server and can keep it. When it
+	// is set the token endpoint demands it, in ADDITION to PKCE rather than instead of it — the
+	// secret proves which application is exchanging, PKCE proves it is the one the browser was
+	// sent from, and neither answers the other's question. A client with no secret is public: a
+	// page, which can keep nothing.
+	Secret             string
 	RedirectURIs       []string
 	PostLogoutRedirect []string
 }

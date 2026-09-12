@@ -200,6 +200,18 @@ func (h *harness) exchange(client, redirect, code, verifier string) (map[string]
 
 // read returns the body and puts it back, so a test may look at a response and then hand it to a
 // helper that looks again.
+// decode reads a JSON body, whatever the status.
+func decode(t *testing.T, res *http.Response) map[string]any {
+	t.Helper()
+	defer func() { _ = res.Body.Close() }()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+
+	return out
+}
+
 func read(t *testing.T, res *http.Response) string {
 	t.Helper()
 	b, err := io.ReadAll(res.Body)

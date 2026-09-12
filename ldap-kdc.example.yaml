@@ -202,6 +202,11 @@ oidc:
   clients:
     - id: https://app.example.com
       name: The application
+      # A CONFIDENTIAL client — one that runs on a server and can keep this — must present it at
+      # the token endpoint, in addition to PKCE rather than instead of it. Leave it out for a page,
+      # which can keep nothing. Note that HTTP Basic cannot carry an id containing a colon, so a
+      # client named by URL presents the secret in the form.
+      # secret_file: /etc/ldap-kdc/app.secret
       redirect_uris:
         - https://app.example.com/
       post_logout_redirect_uris:

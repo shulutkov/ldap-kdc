@@ -104,6 +104,15 @@ A client id may be any string. An id token's audience IS the client id, so a dep
 identifies its services by URL should register the service's URL as the id; the service then checks
 "is this token for me" against the name it already knows itself by.
 
+**A client may be confidential.** A page keeps no secret and is public: PKCE is the whole of its
+proof. An application that runs on a server — a portal signing people in, say — keeps one, and
+giving it `secret` in the configuration makes the token endpoint demand it IN ADDITION to PKCE, not
+instead: the secret proves which application is exchanging, PKCE proves it is the one the browser
+was sent from, and neither answers the other's question. One wrinkle worth knowing before it costs
+an hour: HTTP Basic separates the id from the secret with a colon and so cannot carry an id that
+contains one — and a deployment naming its clients by URL has a colon in every id. Those clients
+present the secret in the form (`client_secret_post`).
+
 **A service account is an account here too.** With `oidc.service_account_group` set, a member of
 that group may ask for a token in its own name — client id is the account, client secret is its
 password — and the same `store.Authenticate` decides it, so an application password works and a

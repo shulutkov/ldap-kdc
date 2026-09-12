@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -289,9 +290,20 @@ func run(cfg *config.Config) error {
 
 		clients := make([]oidc.Client, 0, len(cfg.OIDC.Clients))
 		for _, c := range cfg.OIDC.Clients {
+			secret := c.Secret
+			if len(c.SecretFile) > 0 {
+				// Read from a file so the secret need not sit in the configuration, the same way
+				// the management token already can.
+				raw, err := os.ReadFile(c.SecretFile)
+				if err != nil {
+					return fmt.Errorf("oidc client %q: %w", c.ID, err)
+				}
+				secret = strings.TrimSpace(string(raw))
+			}
 			clients = append(clients, oidc.Client{
 				ID:                 c.ID,
 				Name:               c.Name,
+				Secret:             secret,
 				RedirectURIs:       c.RedirectURIs,
 				PostLogoutRedirect: c.PostLogoutRedirect,
 			})

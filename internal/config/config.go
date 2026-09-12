@@ -214,8 +214,12 @@ type API struct {
 // service's URL: an id token's audience IS the client id, so that is what a service checking
 // "is this token for me" compares against.
 type OIDCClient struct {
-	ID                 string   `yaml:"id"`
-	Name               string   `yaml:"name"`
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
+	// Secret makes the client CONFIDENTIAL: an application that runs on a server and can keep one.
+	// Leave it empty for a page, which cannot. It is demanded in addition to PKCE, not instead.
+	Secret             string   `yaml:"secret"`
+	SecretFile         string   `yaml:"secret_file"`
 	RedirectURIs       []string `yaml:"redirect_uris"`
 	PostLogoutRedirect []string `yaml:"post_logout_redirect_uris"`
 }

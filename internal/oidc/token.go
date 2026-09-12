@@ -1,8 +1,11 @@
 package oidc
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,6 +30,15 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.tokenError(w, http.StatusBadRequest, "unsupported_grant_type",
 			"authorization_code and client_credentials are served")
+
+		return
+	}
+
+	// Which client is exchanging, and whether it proved it. A confidential client's secret is
+	// checked BEFORE the code is spent: a wrong secret must not burn somebody else's code.
+	if err := s.authenticateClient(r); err != nil {
+		s.result("token", "bad-client-secret")
+		s.tokenError(w, http.StatusUnauthorized, "invalid_client", err.Error())
 
 		return
 	}
@@ -104,6 +116,40 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// authenticateClient checks the secret of a confidential client, and lets a public one through.
+//
+// Public and confidential is not a setting to get wrong in the lenient direction, so the rule is
+// stated from the CLIENT's side rather than the request's: a client configured with a secret must
+// present it, however the request was shaped, and one configured without cannot be authenticated
+// by a secret it does not have. A request that carries a secret for a public client is refused
+// rather than ignored — it means somebody believes in a credential that decides nothing.
+func (s *Server) authenticateClient(r *http.Request) error {
+	id := strings.TrimSpace(r.Form.Get("client_id"))
+	secret := r.Form.Get("client_secret")
+	// HTTP Basic carries the two separated by a colon, so it cannot carry an id that CONTAINS one
+	// — and a deployment whose client ids are URLs has a colon in every one of them (RFC 7617
+	// forbids it in the userid outright). Such a client must use client_secret_post, and the
+	// refusal it gets otherwise says "unknown client" because that is literally what happened:
+	// everything before the first colon was read as the id.
+	if name, pass, ok := r.BasicAuth(); ok && !strings.Contains(name, "/") {
+		id, secret = name, pass
+	}
+	client, known := s.client(id)
+	if !known {
+		return errors.New("unknown client")
+	}
+	switch {
+	case client.Secret == "" && secret != "":
+		return errors.New("this client is public and takes no secret")
+	case client.Secret == "":
+		return nil
+	case subtle.ConstantTimeCompare([]byte(client.Secret), []byte(secret)) != 1:
+		return errors.New("the client secret is wrong")
+	}
+
+	return nil
 }
 
 // mint signs one assertion about a subject for one audience.
