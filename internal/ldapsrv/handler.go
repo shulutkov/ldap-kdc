@@ -120,8 +120,14 @@ func (h *Handler) Bind(bindDN, bindSimplePw string, conn net.Conn) (ldap.LDAPRes
 		return ldap.LDAPResultUnwillingToPerform, nil
 	}
 
-	user, code := h.findBindUser(ctx, bindDN, true)
+	user, code, reason := h.findBindUserReason(ctx, bindDN, true)
 	if code != ldap.LDAPResultSuccess {
+		// The client is told `Invalid credentials` and nothing else, deliberately. The OPERATOR is
+		// told why, because the alternative is what this cost once already: OpenBao configured with
+		// a bind DN this directory does not use (`cn=x,ou=users,…` where the DN embeds the primary
+		// group), a client seeing 49, and a journal with not one line about any of it.
+		h.log.Info().Str("dn", bindDN).Str("src", sourceAddr(conn)).Str("reason", reason).
+			Msg("bind refused")
 		h.limiter.NoteFailure(sourceAddr(conn))
 		h.result("bind", "unknown-user")
 
@@ -536,28 +542,47 @@ func (h *Handler) Close(boundDN string, conn net.Conn) error { return nil }
 
 // findBindUser resolves a bind DN to an account, accepting either a distinguished name or a user
 // principal name in mail form.
+//
+// The second return value is WHY it failed, in the vocabulary of this directory rather than LDAP's:
+// the result code a client sees is `Invalid credentials` for every one of these, which is correct
+// towards a stranger and useless to the operator reading the journal. See the reasons named below.
 func (h *Handler) findBindUser(ctx context.Context, dn string, checkGroup bool) (*store.User, ldap.LDAPResultCode) {
+	user, code, _ := h.findBindUserReason(ctx, dn, checkGroup)
+	return user, code
+}
+
+// Reasons a bind DN resolves to nobody. They are for the journal, never for the client: telling a
+// stranger that the name exists but the group in it is wrong is telling them the name exists.
+const (
+	reasonUnknownName   = "no account by that name"
+	reasonOutsideBase   = "the DN is outside this directory's base"
+	reasonMalformedDN   = "the DN has a shape this directory does not use"
+	reasonGroupMismatch = "the primary group in the DN is not this account's"
+	reasonStoreError    = "the directory could not be read"
+)
+
+func (h *Handler) findBindUserReason(ctx context.Context, dn string, checkGroup bool) (*store.User, ldap.LDAPResultCode, string) {
 	if emailPattern.MatchString(dn) {
 		users, err := h.st.ListUsers(ctx)
 		if err != nil {
-			return nil, ldap.LDAPResultOperationsError
+			return nil, ldap.LDAPResultOperationsError, reasonStoreError
 		}
 		for i := range users {
 			if strings.EqualFold(users[i].Mail, dn) {
 				u, err := h.st.GetUser(ctx, users[i].Name)
 				if err != nil {
-					return nil, ldap.LDAPResultOperationsError
+					return nil, ldap.LDAPResultOperationsError, reasonStoreError
 				}
 
-				return u, ldap.LDAPResultSuccess
+				return u, ldap.LDAPResultSuccess, ""
 			}
 		}
 
-		return nil, ldap.LDAPResultInvalidCredentials
+		return nil, ldap.LDAPResultInvalidCredentials, reasonUnknownName
 	}
 
 	if !strings.HasSuffix(dn, ","+h.cfg.BaseDN) {
-		return nil, ldap.LDAPResultInvalidCredentials
+		return nil, ldap.LDAPResultInvalidCredentials, reasonOutsideBase
 	}
 
 	parts := strings.Split(strings.TrimSuffix(dn, ","+h.cfg.BaseDN), ",")
@@ -571,12 +596,12 @@ func (h *Handler) findBindUser(ctx context.Context, dn string, checkGroup bool) 
 		userName = trimRDN(parts[0], h.cfg.NameFormat)
 		groupName = trimRDN(parts[1], h.cfg.GroupFormat)
 	default:
-		return nil, ldap.LDAPResultInvalidCredentials
+		return nil, ldap.LDAPResultInvalidCredentials, reasonMalformedDN
 	}
 
 	user, err := h.st.GetUser(ctx, userName)
 	if err != nil {
-		return nil, ldap.LDAPResultInvalidCredentials
+		return nil, ldap.LDAPResultInvalidCredentials, reasonUnknownName
 	}
 
 	// The DN embeds the primary group, so a mismatch means the caller supplied a name that does
@@ -584,11 +609,11 @@ func (h *Handler) findBindUser(ctx context.Context, dn string, checkGroup bool) 
 	if checkGroup && len(groupName) > 0 {
 		g, err := h.st.GetGroup(ctx, groupName)
 		if err != nil || g.GIDNumber != user.PrimaryGroup {
-			return nil, ldap.LDAPResultInvalidCredentials
+			return nil, ldap.LDAPResultInvalidCredentials, reasonGroupMismatch
 		}
 	}
 
-	return user, ldap.LDAPResultSuccess
+	return user, ldap.LDAPResultSuccess, ""
 }
 
 // classifyDN says whether a DN names a user or a group, and what it is called.

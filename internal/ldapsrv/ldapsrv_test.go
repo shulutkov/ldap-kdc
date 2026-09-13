@@ -1,6 +1,7 @@
 package ldapsrv
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"path/filepath"
@@ -233,6 +234,45 @@ func TestBind(t *testing.T) {
 			t.Error("bind succeeded with a DN naming the wrong primary group")
 		}
 	})
+}
+
+// TestARefusedBindSaysWhyInTheJournal. The client is told `Invalid credentials` and nothing else —
+// correct towards a stranger — but until this the OPERATOR was told nothing at all: a refusal that
+// never reached findBindUser's outcome wrote only a metric. It cost a real afternoon: OpenBao was
+// configured with `cn=pirate,ou=users,…` while this directory embeds the primary group in the DN,
+// the client saw 49, and the journal had not one line about any of it.
+func TestARefusedBindSaysWhyInTheJournal(t *testing.T) {
+	h := newHarness(t)
+
+	var buf bytes.Buffer
+	handler := NewHandler(Config{
+		BaseDN: testBaseDN, NameFormat: "cn", GroupFormat: "ou", Realm: testRealm,
+	}, h.store, zerolog.New(&buf), metrics.New())
+
+	cases := map[string]string{
+		"cn=nobody,ou=staff,ou=users," + testBaseDN: reasonUnknownName,
+		"cn=alice,ou=admins,ou=users," + testBaseDN: reasonGroupMismatch,
+		"cn=alice,ou=staff,ou=users,dc=elsewhere":   reasonOutsideBase,
+		"cn=a,ou=b,ou=c,ou=d," + testBaseDN:         reasonMalformedDN,
+	}
+	for dn, reason := range cases {
+		buf.Reset()
+		code, err := handler.Bind(dn, alicePass, nil)
+		if err != nil {
+			t.Fatalf("bind %s: %v", dn, err)
+		}
+		if code != ldap.LDAPResultInvalidCredentials {
+			t.Errorf("bind %s = %v, want invalid credentials", dn, code)
+		}
+		line := buf.String()
+		if !strings.Contains(line, "bind refused") || !strings.Contains(line, reason) {
+			t.Errorf("journal for %s = %q, want a refusal naming %q", dn, line, reason)
+		}
+		// The password never goes to the journal, whatever else does.
+		if strings.Contains(line, alicePass) {
+			t.Errorf("journal for %s carries the password", dn)
+		}
+	}
 }
 
 func TestBindOnADisabledAccountFails(t *testing.T) {
