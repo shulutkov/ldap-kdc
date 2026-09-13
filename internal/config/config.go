@@ -507,9 +507,12 @@ func (c *Config) validateOIDC() error {
 		if len(cl.ID) == 0 {
 			return errors.New("every oidc client needs an id")
 		}
-		if len(cl.RedirectURIs) == 0 {
-			return fmt.Errorf("oidc client %q has no redirect_uris, so it could never be sent an answer", cl.ID)
-		}
+		// No redirect_uris is allowed, and it says something: this client is an AUDIENCE and not
+		// an application. A token's audience must be a client id registered here, so a service
+		// that machines get tokens FOR — a registry, a database proxy — has to appear in this
+		// list, while having nowhere to send a person back to and no business in the browser
+		// flow at all. Demanding a URI from it produced exactly one thing in practice: a
+		// deployment writing a redirect that leads nowhere, which the next reader believes.
 	}
 
 	return nil

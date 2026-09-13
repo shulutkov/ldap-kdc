@@ -96,6 +96,16 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirect := q.Get("redirect_uri")
+	if len(client.RedirectURIs) == 0 {
+		// A client registered without redirect URIs is an AUDIENCE — the name a machine's token is
+		// issued FOR — and not an application a person is sent back to. Saying that outright beats
+		// "this redirect URI is not registered", which sends the reader looking for a list that was
+		// never meant to exist.
+		s.fail(w, http.StatusBadRequest,
+			"this client exists only as a token audience and has no browser sign-in", client.ID)
+
+		return
+	}
 	if !registered(client.RedirectURIs, redirect) {
 		s.fail(w, http.StatusBadRequest, "this redirect URI is not registered for the client", redirect)
 

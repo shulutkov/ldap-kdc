@@ -114,8 +114,8 @@ func New(ctx context.Context, cfg Config, st *store.Store, log zerolog.Logger, m
 		return nil, errors.New("oidc: no clients configured — nothing could obtain a token")
 	}
 	for _, c := range cfg.Clients {
-		if c.ID == "" || len(c.RedirectURIs) == 0 {
-			return nil, fmt.Errorf("oidc: client %q needs an id and at least one redirect URI", c.ID)
+		if c.ID == "" {
+			return nil, errors.New("oidc: every client needs an id")
 		}
 	}
 

@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -280,5 +281,40 @@ func TestRemovalFromTheGroupTakesEffectAtOnce(t *testing.T) {
 	}
 	if out, status := h.ask("robot", servicePassword, uiClient); status == http.StatusOK {
 		t.Fatalf("a token was issued after the account left the group: %v", out)
+	}
+}
+
+// TestAnAudienceIsAClientWithNowhereToRedirect. A token's audience must be a client id registered
+// here, so a service machines get tokens FOR — a registry, a database proxy — has to appear in the
+// client list. It has nowhere to send a person back to and no business in the browser flow, and
+// demanding a redirect URI from it bought exactly one thing in practice: a deployment writing a
+// redirect that leads nowhere, which the next reader believes.
+func TestAnAudienceIsAClientWithNowhereToRedirect(t *testing.T) {
+	h := setup(t)
+	serviceAccounts(t, h)
+
+	const registry = "https://registry.example"
+	h.srv.cfg.Clients = append(h.srv.cfg.Clients, Client{ID: registry, Name: "the registry"})
+
+	// A machine gets a token for it, which is the whole reason it is registered.
+	body, code := h.ask("robot", servicePassword, registry)
+	if code != http.StatusOK {
+		t.Fatalf("client credentials for an audience-only client = %d: %v", code, body)
+	}
+	if _, ok := body["access_token"]; !ok {
+		t.Fatalf("no token issued: %v", body)
+	}
+
+	// And a person sent to the browser flow for it is told what it IS, rather than that some list
+	// does not contain their redirect.
+	res := h.authorize(registry, "https://registry.example/", "verifier-for-the-registry", nil)
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("authorize for an audience-only client = %d, want 400", res.StatusCode)
+	}
+	page, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(page), "only as a token audience") {
+		t.Errorf("the refusal does not say what the client is: %q", string(page))
 	}
 }

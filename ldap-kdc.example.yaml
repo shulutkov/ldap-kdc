@@ -219,6 +219,10 @@ oidc:
   # deployment that identifies its services by URL should use the service's URL, and the service
   # checking "is this token for me" then compares against exactly that. A redirect URI is matched
   # WHOLE: prefix matching is how a redirect turns into an open redirect.
+  #
+  # A client with NO redirect_uris is an audience and not an application: the name machines get
+  # tokens for (a registry, a proxy), which has nowhere to send a person back to. It takes part in
+  # the client credentials grant and is refused at /auth with a line saying exactly that.
   clients:
     - id: https://app.example.com
       name: The application
