@@ -84,7 +84,7 @@ const RESOURCES: Record<Kind, Resource> = {
     key: (v) => str(v.name),
     itemPath: (k) => `/api/v1/groups/${encodeURIComponent(k)}`,
     load: async (k, token) => (await api<{ group: Item }>(`/api/v1/groups/${encodeURIComponent(k)}`, token)).group,
-    patchable: ['gidNumber', 'description', 'includeGroups', 'capabilities', 'customAttributes'],
+    patchable: ['name', 'gidNumber', 'description', 'includeGroups', 'capabilities', 'customAttributes'],
     template: { name: 'staff', description: '', capabilities: [] },
   },
   principals: {

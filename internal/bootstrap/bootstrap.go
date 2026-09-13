@@ -134,6 +134,25 @@ type Options struct {
 type Summary struct {
 	Created int
 	Existed int
+	// Renamed counts the groups the plan calls differently from the directory but at the same gid.
+	// The number is the group's identity — it is what an account's primary_group names and what
+	// memberships and includes hold — and the name is what the group is called today.
+	Renamed int
+}
+
+// outcome is what applying one entry did.
+type outcome int
+
+const (
+	existed outcome = iota
+	created
+	renamed
+)
+
+// groupOutcome is an outcome with the name a renamed group had, for the log line.
+type groupOutcome struct {
+	what outcome
+	was  string
 }
 
 // Load reads a plan from a YAML file.
@@ -321,13 +340,21 @@ func Apply(ctx context.Context, st *store.Store, plan *Plan, opts Options, log z
 	// Groups come first: an account names its primary group by number, and a group that does
 	// not exist yet has no number to name.
 	for _, g := range plan.Groups {
-		created, err := applyGroup(ctx, st, g)
+		did, err := applyGroup(ctx, st, g)
 		if err != nil {
 			return summary, fmt.Errorf("group %s: %w", g.Name, err)
 		}
-		summary.count(created)
 
-		log.Info().Str("group", g.Name).Bool("created", created).Msg("bootstrap group")
+		if did.what == renamed {
+			summary.Renamed++
+			log.Info().Str("group", g.Name).Str("was", did.was).Int("gid", g.GIDNumber).Msg("bootstrap group renamed")
+
+			continue
+		}
+
+		summary.count(did.what == created)
+
+		log.Info().Str("group", g.Name).Bool("created", did.what == created).Msg("bootstrap group")
 	}
 
 	for _, u := range plan.Users {
@@ -371,24 +398,48 @@ func (s *Summary) count(created bool) {
 	s.Existed++
 }
 
-func applyGroup(ctx context.Context, st *store.Store, g Group) (bool, error) {
+func applyGroup(ctx context.Context, st *store.Store, g Group) (groupOutcome, error) {
 	switch _, err := st.GetGroup(ctx, g.Name); {
 	case err == nil:
-		return false, nil
+		return groupOutcome{what: existed}, nil
 	case !errors.Is(err, store.ErrNotFound):
-		return false, err
+		return groupOutcome{}, err
+	}
+
+	// Not known by this name. Known by this NUMBER is the same group under a new name, and the plan
+	// is the place a group is renamed — there is no other. Treated as a new group instead, the
+	// insert met the gid's unique index, and what the operator read for having renamed a group in
+	// the file that declares it was "UNIQUE constraint failed: groups.gid_number".
+	//
+	// Only the name follows; the plan does not reconcile a group's other fields on any path.
+	if g.GIDNumber > 0 {
+		switch held, err := st.GetGroupByGID(ctx, g.GIDNumber); {
+		case err == nil:
+			was := held.Name
+			if _, err := st.UpdateGroup(ctx, was, func(cur *store.Group) error {
+				cur.Name = g.Name
+
+				return nil
+			}); err != nil {
+				return groupOutcome{}, err
+			}
+
+			return groupOutcome{what: renamed, was: was}, nil
+		case !errors.Is(err, store.ErrNotFound):
+			return groupOutcome{}, err
+		}
 	}
 
 	gid := g.GIDNumber
 	if gid == 0 {
 		next, err := st.NextGIDNumber(ctx)
 		if err != nil {
-			return false, err
+			return groupOutcome{}, err
 		}
 		gid = next
 	}
 
-	return true, st.CreateGroup(ctx, &store.Group{
+	return groupOutcome{what: created}, st.CreateGroup(ctx, &store.Group{
 		Name:          g.Name,
 		GIDNumber:     gid,
 		Description:   g.Description,

@@ -16,6 +16,10 @@ type createGroupRequest struct {
 }
 
 type patchGroupRequest struct {
+	// Name renames the group. Its gid — and every membership, include and primary_group that names
+	// the group by it — stays; only what the group is called changes, and with it the DN of every
+	// account whose primary group it is.
+	Name          *string              `json:"name,omitempty"`
 	GIDNumber     *int                 `json:"gidNumber,omitempty"`
 	Description   *string              `json:"description,omitempty"`
 	IncludeGroups *[]int               `json:"includeGroups,omitempty"`
@@ -89,7 +93,15 @@ func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The same rule as on create, answered here where it is a 400 and not deep in the store.
+	if req.Name != nil && len(*req.Name) == 0 {
+		writeError(w, http.StatusBadRequest, "name must not be empty")
+
+		return
+	}
+
 	updated, err := s.st.UpdateGroup(r.Context(), r.PathValue("name"), func(g *store.Group) error {
+		applyIf(req.Name, &g.Name)
 		applyIf(req.GIDNumber, &g.GIDNumber)
 		applyIf(req.Description, &g.Description)
 		applyIf(req.IncludeGroups, &g.IncludeGroups)

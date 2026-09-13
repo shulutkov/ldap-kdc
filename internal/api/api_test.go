@@ -819,3 +819,47 @@ func TestPrincipalReportsItsTicketFlags(t *testing.T) {
 		t.Errorf("krbTicketFlags = %v, want %v", got, want)
 	}
 }
+
+// A group is renamed through PATCH, and the rename is only a rename: the gid, and the account
+// whose primary group it is, stay where they were.
+func TestAGroupCanBeRenamedThroughTheAPI(t *testing.T) {
+	h := newHarness(t)
+
+	for _, g := range []map[string]any{{"name": "staff", "gidNumber": 5000}, {"name": "admins", "gidNumber": 5001}} {
+		if status, body := h.do(t, "POST", "/api/v1/groups", g); status != http.StatusCreated {
+			t.Fatalf("creating %v: status = %d, body = %v", g, status, body)
+		}
+	}
+	if status, body := h.do(t, "POST", "/api/v1/users", map[string]any{
+		"name": "pirate", "primaryGroup": 5000, "password": "a long enough password",
+	}); status != http.StatusCreated {
+		t.Fatalf("creating user: status = %d, body = %v", status, body)
+	}
+
+	status, body := h.do(t, "PATCH", "/api/v1/groups/staff", map[string]any{"name": "workspace-admin"})
+	if status != http.StatusOK {
+		t.Fatalf("rename: status = %d, body = %v", status, body)
+	}
+	group, _ := body["group"].(map[string]any)
+	if group["name"] != "workspace-admin" || group["gidNumber"] != float64(5000) {
+		t.Fatalf("renamed group = %v, want workspace-admin at gid 5000", group)
+	}
+
+	if status, _ := h.do(t, "GET", "/api/v1/groups/staff", nil); status != http.StatusNotFound {
+		t.Errorf("the old name still answers: status = %d", status)
+	}
+	if status, body := h.do(t, "GET", "/api/v1/users/pirate", nil); status != http.StatusOK {
+		t.Fatalf("user after the rename: status = %d, body = %v", status, body)
+	} else if u, _ := body["user"].(map[string]any); u["primaryGroup"] != float64(5000) {
+		t.Errorf("pirate's primary group = %v, want 5000 still", u["primaryGroup"])
+	}
+
+	// A name another group holds is a conflict, and no name at all is a bad request — the same
+	// answers a create gives.
+	if status, _ := h.do(t, "PATCH", "/api/v1/groups/workspace-admin", map[string]any{"name": "admins"}); status != http.StatusConflict {
+		t.Errorf("rename onto a taken name: status = %d, want 409", status)
+	}
+	if status, _ := h.do(t, "PATCH", "/api/v1/groups/workspace-admin", map[string]any{"name": ""}); status != http.StatusBadRequest {
+		t.Errorf("rename to nothing: status = %d, want 400", status)
+	}
+}

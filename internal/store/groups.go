@@ -175,6 +175,10 @@ func (s *Store) UpdateGroup(ctx context.Context, name string, mutate func(*Group
 		if err := mutate(g); err != nil {
 			return err
 		}
+		// The same rule as on create: a mutation may rename, and a rename to nothing is not one.
+		if len(g.Name) == 0 {
+			return fmt.Errorf("group name is required")
+		}
 
 		now := time.Now().UTC()
 

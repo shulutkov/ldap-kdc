@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -542,5 +543,40 @@ func TestAPlanNamingAReservedAttributeIsRejected(t *testing.T) {
 
 	if err := plan.Validate(opts); err == nil {
 		t.Fatal("a plan overriding memberOf was accepted")
+	}
+}
+
+// A group is renamed in the plan and nowhere else: the gid is its identity, and the same number
+// under a new name is the same group. Before this the second plan met the gid's unique index and
+// the operator read "UNIQUE constraint failed: groups.gid_number" for having renamed a group in
+// the file that declares it.
+func TestAGroupRenamedInThePlanIsRenamedNotRecreated(t *testing.T) {
+	st, opts := testStore(t)
+	ctx := context.Background()
+
+	apply(t, st, opts, "groups:\n  - name: masters\n    gid_number: 5000\nusers:\n  - name: pirate\n    primary_group: 5000\n")
+
+	summary := apply(t, st, opts, "groups:\n  - name: workspace-admin\n    gid_number: 5000\nusers:\n  - name: pirate\n    primary_group: 5000\n")
+	if summary.Renamed != 1 || summary.Created != 0 {
+		t.Fatalf("summary = %+v, want one group renamed and nothing created", summary)
+	}
+
+	g, err := st.GetGroup(ctx, "workspace-admin")
+	if err != nil || g.GIDNumber != 5000 {
+		t.Fatalf("workspace-admin = %+v, %v; want it at gid 5000", g, err)
+	}
+	if _, err := st.GetGroup(ctx, "masters"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("masters after the rename: %v, want not found", err)
+	}
+
+	// The account's membership is by number and does not move.
+	u, err := st.GetUser(ctx, "pirate")
+	if err != nil || u.PrimaryGroup != 5000 {
+		t.Fatalf("pirate = %+v, %v; want primary group 5000 still", u, err)
+	}
+
+	// Applied again, the plan is what the directory already is.
+	if again := apply(t, st, opts, "groups:\n  - name: workspace-admin\n    gid_number: 5000\n"); again.Renamed != 0 || again.Created != 0 || again.Existed != 1 {
+		t.Fatalf("second apply = %+v, want the group simply found", again)
 	}
 }
