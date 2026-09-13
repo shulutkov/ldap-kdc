@@ -55,8 +55,14 @@ type Server struct {
 	// GroupFormat is the RDN attribute used for group entries, e.g. "ou" or "cn".
 	GroupFormat string `yaml:"group_format" env:"GROUP_FORMAT" envDefault:"ou"`
 
-	// SSHKeyAttr is the attribute name SSH keys are published under.
-	SSHKeyAttr string `yaml:"ssh_key_attr" env:"SSH_KEY_ATTR" envDefault:"sshPublicKey"`
+	// SSHKeyAttrs are the attribute names a user's SSH keys are published under — every name, the
+	// same values under each. Two names exist in the world for one thing: OpenSSH-LPK's
+	// sshPublicKey, and FreeIPA's ipaSshPubKey, which sssd and every reader configured for IPA look
+	// for. An account is found by a search on either; a modify is accepted under either already.
+	SSHKeyAttrs []string `yaml:"ssh_key_attrs" env:"SSH_KEY_ATTRS" envDefault:"sshPublicKey,ipaSshPubKey"`
+	// SSHKeyAttr is the older singular of the list. Set, it IS the list: a configuration that named
+	// one attribute keeps publishing exactly that one.
+	SSHKeyAttr string `yaml:"ssh_key_attr" env:"SSH_KEY_ATTR"`
 
 	// AnonymousDSE allows unauthenticated clients to read the root DSE.
 	AnonymousDSE bool `yaml:"anonymous_dse" env:"ANONYMOUS_DSE"`
@@ -391,6 +397,11 @@ func (c *Config) normalize() error {
 	}
 	c.Server.BaseDN = strings.ToLower(c.Server.BaseDN)
 
+	if len(c.Server.SSHKeyAttr) > 0 {
+		c.Server.SSHKeyAttrs = []string{c.Server.SSHKeyAttr}
+	}
+	c.Server.SSHKeyAttrs = attributeNames(c.Server.SSHKeyAttrs)
+
 	if len(c.DNS.Zone) == 0 {
 		c.DNS.Zone = c.Server.Domain
 	}
@@ -418,6 +429,23 @@ func (c *Config) normalize() error {
 	return nil
 }
 
+// attributeNames trims a list of LDAP attribute names, drops the empty ones and keeps one of each
+// — attribute names are case-insensitive, so sshPublicKey and sshpublickey are the same name and
+// publishing both would be the same attribute twice on every entry.
+func attributeNames(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, name := range in {
+		name = strings.TrimSpace(name)
+		if len(name) == 0 || seen[strings.ToLower(name)] {
+			continue
+		}
+		seen[strings.ToLower(name)] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 // baseDNFromDomain turns "example.com" into "dc=example,dc=com".
 func baseDNFromDomain(domain string) string {
 	parts := strings.Split(domain, ".")
@@ -443,6 +471,9 @@ func (c *Config) resolve(p string) string {
 
 // Validate reports the first configuration error that would keep the service from starting.
 func (c *Config) Validate() error {
+	if len(c.Server.SSHKeyAttrs) == 0 {
+		return errors.New("server.ssh_key_attrs must name at least one attribute")
+	}
 	if len(c.Server.Realm) == 0 {
 		return errors.New("server.realm is required")
 	}

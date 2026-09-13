@@ -507,7 +507,7 @@ func startLDAP(
 			BaseDN:                cfg.Server.BaseDN,
 			NameFormat:            cfg.Server.NameFormat,
 			GroupFormat:           cfg.Server.GroupFormat,
-			SSHKeyAttr:            cfg.Server.SSHKeyAttr,
+			SSHKeyAttrs:           cfg.Server.SSHKeyAttrs,
 			Realm:                 cfg.Server.Realm,
 			DomainSID:             domainSID,
 			AnonymousDSE:          cfg.Server.AnonymousDSE,

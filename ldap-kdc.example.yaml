@@ -31,8 +31,12 @@ server:
   name_format: cn
   group_format: ou
 
-  # Attribute SSH keys are published under.
-  ssh_key_attr: sshPublicKey
+  # Attribute names SSH keys are published under — the same keys under each. OpenSSH-LPK's
+  # sshPublicKey and FreeIPA's ipaSshPubKey are the two names readers know; a search on either
+  # finds the account. The older singular `ssh_key_attr`, if set, is the whole list.
+  ssh_key_attrs:
+    - sshPublicKey
+    - ipaSshPubKey
 
   # Let unauthenticated clients read the root DSE. SSSD needs this.
   anonymous_dse: true

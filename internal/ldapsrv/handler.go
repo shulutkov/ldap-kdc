@@ -23,7 +23,8 @@ type Config struct {
 	BaseDN      string
 	NameFormat  string
 	GroupFormat string
-	SSHKeyAttr  string
+	// SSHKeyAttrs are the names a user's SSH keys are published under, all of them.
+	SSHKeyAttrs []string
 	Realm       string
 	// DomainSID is the realm's Windows domain SID, published on entries as the prefix of
 	// ipaNTSecurityIdentifier.

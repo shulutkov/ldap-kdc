@@ -82,7 +82,7 @@ func newHarness(t *testing.T) *harness {
 	h.seed(t)
 
 	cfg := Config{
-		BaseDN: testBaseDN, NameFormat: "cn", GroupFormat: "ou", SSHKeyAttr: "sshPublicKey",
+		BaseDN: testBaseDN, NameFormat: "cn", GroupFormat: "ou", SSHKeyAttrs: []string{"sshPublicKey", "ipaSshPubKey"},
 		Realm: testRealm, DomainSID: sid, AnonymousDSE: true, EncTypes: etypes,
 		LimitFailedBinds: true, NumberOfFailedBinds: 3,
 		PeriodOfFailedBinds: 10 * time.Second, BlockFailedBindsFor: 60 * time.Second,
@@ -303,7 +303,7 @@ func TestSearchUsers(t *testing.T) {
 	res, err := conn.Search(ldap.NewSearchRequest(
 		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		"(&(objectClass=posixAccount)(cn=alice))",
-		[]string{"cn", "uidNumber", "gidNumber", "mail", "memberOf", "krbPrincipalName", "sshPublicKey"},
+		[]string{"cn", "uidNumber", "gidNumber", "mail", "memberOf", "krbPrincipalName", "sshPublicKey", "ipaSshPubKey"},
 		nil))
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -343,6 +343,35 @@ func TestSearchUsers(t *testing.T) {
 
 	if got := e.GetAttributeValue("sshPublicKey"); !strings.HasPrefix(got, "ssh-ed25519") {
 		t.Errorf("sshPublicKey = %q", got)
+	}
+	// The same key under FreeIPA's name, which is what sssd and an IPA-configured reader ask for.
+	if got, want := e.GetAttributeValue("ipaSshPubKey"), e.GetAttributeValue("sshPublicKey"); got != want {
+		t.Errorf("ipaSshPubKey = %q, want the same value as sshPublicKey %q", got, want)
+	}
+}
+
+// An account is found by its key under either name: a reader that learnt FreeIPA's schema
+// searches ipaSshPubKey, one that learnt OpenSSH-LPK's searches sshPublicKey, and both are the
+// same account. The filter is applied by the library to the entry as published, which is why
+// publishing the second name is the whole of what makes the second search work.
+func TestAnAccountIsFoundByItsKeyUnderEitherName(t *testing.T) {
+	h := newHarness(t)
+
+	conn := h.dial(t)
+	if err := conn.Bind(aliceDN(), alicePass); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	for _, attr := range []string{"ipaSshPubKey", "sshPublicKey"} {
+		res, err := conn.Search(ldap.NewSearchRequest(
+			testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			"("+attr+"=ssh-ed25519 AAAAC3Nz alice@laptop)", []string{"cn"}, nil))
+		if err != nil {
+			t.Fatalf("search by %s: %v", attr, err)
+		}
+		if len(res.Entries) != 1 || res.Entries[0].GetAttributeValue("cn") != "alice" {
+			t.Fatalf("search by %s found %d entries, want alice alone", attr, len(res.Entries))
+		}
 	}
 }
 

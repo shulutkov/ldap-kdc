@@ -189,7 +189,11 @@ func (b *entryBuilder) accountEntry(
 	)
 
 	if len(u.SSHKeys) > 0 {
-		attrs = append(attrs, &ldap.EntryAttribute{Name: b.cfg.SSHKeyAttr, Values: u.SSHKeys})
+		// The same keys under every configured name: a reader looks for the one its schema taught
+		// it, and the account has to be found by either.
+		for _, name := range b.cfg.SSHKeyAttrs {
+			attrs = append(attrs, &ldap.EntryAttribute{Name: name, Values: u.SSHKeys})
+		}
 	}
 
 	attrs = append(attrs, customAttributes(u.CustomAttrs)...)

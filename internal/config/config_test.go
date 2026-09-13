@@ -35,7 +35,7 @@ func TestDefaultsComeFromTheStructTags(t *testing.T) {
 	}{
 		{"server.name_format", cfg.Server.NameFormat, "cn"},
 		{"server.group_format", cfg.Server.GroupFormat, "ou"},
-		{"server.ssh_key_attr", cfg.Server.SSHKeyAttr, "sshPublicKey"},
+		{"server.ssh_key_attrs", strings.Join(cfg.Server.SSHKeyAttrs, ","), "sshPublicKey,ipaSshPubKey"},
 		{"ldap.enabled", cfg.LDAP.Enabled, true},
 		{"ldap.listen", cfg.LDAP.Listen, "0.0.0.0:389"},
 		{"ldaps.enabled", cfg.LDAPS.Enabled, false},
@@ -322,5 +322,36 @@ func TestDisabledListenerNeedsNoAddress(t *testing.T) {
 	// Only listeners that are actually enabled have to be configured.
 	if _, err := Load(write(t, minimal+"ldap:\n  enabled: false\n  listen: \"\"\n")); err != nil {
 		t.Errorf("Load: %v", err)
+	}
+}
+
+// The older singular is kept, and when a file names it, that one name is the whole list: a
+// configuration that chose one attribute keeps publishing exactly that one, IPA name or not.
+func TestTheOlderSingularKeyAttributeIsTheWholeList(t *testing.T) {
+	cfg, err := Load(write(t, "server:\n  realm: EXAMPLE.COM\n  ssh_key_attr: sshPublicKey\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(cfg.Server.SSHKeyAttrs, ","); got != "sshPublicKey" {
+		t.Errorf("ssh_key_attrs = %q, want the singular alone", got)
+	}
+}
+
+// Attribute names are case-insensitive, so the list is one of each whatever the spelling, and
+// nothing empty; a list with nothing left in it is refused where it is read, not on the first search.
+func TestKeyAttributeNamesAreTrimmedAndKeptOnce(t *testing.T) {
+	t.Setenv("SERVER_REALM", "EXAMPLE.COM")
+	t.Setenv("SERVER_SSH_KEY_ATTRS", " ipaSshPubKey, sshPublicKey ,IPASSHPUBKEY,")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := strings.Join(cfg.Server.SSHKeyAttrs, ","); got != "ipaSshPubKey,sshPublicKey" {
+		t.Errorf("ssh_key_attrs = %q, want the two names once, first spelling kept", got)
+	}
+
+	if _, err := Load(write(t, "server:\n  realm: EXAMPLE.COM\n  ssh_key_attr: \"   \"\n")); err == nil || !strings.Contains(err.Error(), "ssh_key_attrs") {
+		t.Errorf("an empty list loaded: err = %v, want a refusal naming ssh_key_attrs", err)
 	}
 }
