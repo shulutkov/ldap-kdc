@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"slices"
@@ -265,6 +266,9 @@ func run(cfg *config.Config) error {
 		services = append(services, service{"dns", srv.Shutdown})
 	}
 
+	// apiMount is the console and management API when they share the provider's listener; nil when
+	// they have one of their own.
+	var apiMount http.Handler
 	if cfg.API.Enabled {
 		var apiTLS *tls.Config
 		if cfg.API.TLS {
@@ -292,10 +296,21 @@ func run(cfg *config.Config) error {
 		if err != nil {
 			return err
 		}
-		if err := srv.Start(ctx); err != nil {
-			return err
+		// One address for the whole directory, or one each. Writing the SAME address for the
+		// management API and the provider asks for one listener: the console answers at /ui/ and
+		// the provider at /.well-known and /keys, on one name and no port. Written differently,
+		// they get a port each, which is what a deployment that keeps the management surface on
+		// loopback wants.
+		if shareOIDCListener(cfg) {
+			apiMount = srv.Handler()
+			log.Info().Str("address", cfg.OIDC.Listen).
+				Msg("the management API and console ride on the OpenID provider's listener")
+		} else {
+			if err := srv.Start(ctx); err != nil {
+				return err
+			}
+			services = append(services, service{"api", srv.Shutdown})
 		}
-		services = append(services, service{"api", srv.Shutdown})
 	}
 
 	if cfg.OIDC.Enabled {
@@ -329,6 +344,7 @@ func run(cfg *config.Config) error {
 
 		srv, err := oidc.New(ctx, oidc.Config{
 			Listen:              cfg.OIDC.Listen,
+			Mount:               apiMount,
 			TLS:                 oidcTLS,
 			Issuer:              cfg.OIDC.Issuer,
 			AllowedOrigins:      cfg.OIDC.AllowedOrigins,
@@ -518,4 +534,14 @@ func startLDAP(
 	}
 
 	return srv, nil
+}
+
+// shareOIDCListener reports whether the management API and the OpenID provider were given the same
+// address, which is how a deployment asks for one listener serving both.
+//
+// Same address, same TLS: the provider's. The API's own tls settings are then beside the point, and
+// saying so once beats a second certificate that quietly never gets used.
+func shareOIDCListener(cfg *config.Config) bool {
+	return cfg.API.Enabled && cfg.OIDC.Enabled &&
+		len(cfg.API.Listen) > 0 && cfg.API.Listen == cfg.OIDC.Listen
 }

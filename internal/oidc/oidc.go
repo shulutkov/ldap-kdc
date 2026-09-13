@@ -64,6 +64,16 @@ type Config struct {
 
 	Clients []Client
 
+	// Mount is what serves everything this provider does not: when the directory's console and
+	// management API share this listener, it is their handler. Nil keeps the provider alone on its
+	// port, which is what a deployment that gives them a port of their own gets.
+	//
+	// A provider and a console on ONE address is what makes a directory reachable by one name — the
+	// console at /ui/, the provider at /.well-known and /keys — and the sets of paths do not
+	// overlap, so the routing needs no list anybody has to keep in step: the provider's patterns are
+	// more specific than "/" and win by the mux's own rule.
+	Mount http.Handler
+
 	// ServiceAccountGroup is the directory group whose members may use the client credentials
 	// grant. Empty refuses the grant outright.
 	ServiceAccountGroup string
@@ -166,6 +176,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+pathUserInfo, s.cors(s.userinfo))
 	mux.HandleFunc("OPTIONS "+pathUserInfo, s.preflight)
 	mux.HandleFunc("GET "+pathEndAuth, s.endSession)
+	if s.cfg.Mount != nil {
+		mux.Handle("/", s.cfg.Mount)
+	}
 
 	return mux
 }

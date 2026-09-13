@@ -413,6 +413,11 @@ func (s *Server) routes() http.Handler {
 	return s.observe(mux)
 }
 
+// Handler is this server's routes without a listener of its own — for a deployment that puts the
+// console and the management API on the SAME address as the OpenID provider, so the directory is
+// reached by one name and no port. The caller serves it; nothing here binds.
+func (s *Server) Handler() http.Handler { return s.routes() }
+
 // Start binds the listener and serves in the background.
 func (s *Server) Start(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Listen)

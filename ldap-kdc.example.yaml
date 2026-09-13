@@ -155,6 +155,11 @@ dns:
 api:
   enabled: true
   # Bind to loopback unless a token is set: this interface can change any account's password.
+  #
+  # Writing the SAME address here as in oidc.listen asks for ONE listener serving both: the console
+  # at /ui/, the management API at /api/, the provider at /.well-known and /keys — one name and no
+  # port to remember. The provider's TLS is then what serves them, and the tls settings below are
+  # beside the point.
   listen: 127.0.0.1:5555
   tls: false
   # cert_path: /etc/ldap-kdc/api.crt

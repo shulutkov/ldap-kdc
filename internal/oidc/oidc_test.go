@@ -256,3 +256,41 @@ func payload(t *testing.T, token string) map[string]any {
 
 	return claims
 }
+
+// TestTheConsoleRidesOnTheProvidersListener. A directory reached by ONE name, with no port to
+// remember: the provider answers /.well-known and /keys, the console answers /ui/ and /api/, and
+// nobody has to keep a list of paths in step — the provider's patterns are more specific than "/"
+// and win by the mux's own rule.
+func TestTheConsoleRidesOnTheProvidersListener(t *testing.T) {
+	h := setup(t)
+	h.srv.cfg.Mount = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte("the console: " + r.URL.Path))
+	})
+
+	ts := httptest.NewServer(h.srv.routes())
+	t.Cleanup(ts.Close)
+
+	// The provider keeps what is its own.
+	res, err := ts.Client().Get(ts.URL + pathKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("%s = %d, want the provider's own answer", pathKeys, res.StatusCode)
+	}
+
+	// Everything else is the console's, including the root — which is how a bare name reaches it.
+	for _, path := range []string{"/ui/", "/api/v1/users", "/"} {
+		res, err := ts.Client().Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusTeapot || !strings.Contains(string(body), path) {
+			t.Errorf("%s = %d %q, want the console", path, res.StatusCode, string(body))
+		}
+	}
+}
