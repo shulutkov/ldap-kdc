@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   ApiError,
   Item,
@@ -200,10 +200,8 @@ export default function App() {
   if (!token) {
     return (
       <>
-        <header>
-          <span className="brand">
-            ldap-kdc <span className="muted">console</span>
-          </span>
+        <header className="top">
+          <span className="brand">ldap-kdc</span>
         </header>
         <main className="login">
           {notice && <div className={'notice ' + notice.kind}>{notice.text}</div>}
@@ -215,21 +213,21 @@ export default function App() {
 
   return (
     <>
-      <header>
+      <header className="top">
         <a className="brand" href="#/overview">
-          ldap-kdc <span className="muted">console</span>
+          ldap-kdc
         </a>
-        <div className="status" />
-        <div className="who">
+        <div className="right">
           {me && (
             <>
-              <span className="mono">{me.subject}</span>
-              <span className="badge accent" title={me.expiresAt ? 'session ends ' + new Date(me.expiresAt).toLocaleString() : undefined}>
+              <span className="who">{me.subject}</span>
+              <span className="chip" title={me.expiresAt ? 'session ends ' + new Date(me.expiresAt).toLocaleString() : undefined}>
                 {me.method}
               </span>
             </>
           )}
           <button
+            className="secondary small"
             onClick={() => {
               sessionStorage.setItem(SIGNED_OUT, '1')
               setToken(null)
@@ -240,18 +238,26 @@ export default function App() {
           </button>
         </div>
       </header>
-      <div className="layout">
-        <nav>
-          <a href="#/overview" className={route.page === 'overview' ? 'active' : ''}>
-            Overview
-          </a>
-          <div className="section">Directory</div>
-          {KINDS.map((k) => (
-            <a key={k} href={`#/${k}`} className={route.page !== 'overview' && route.kind === k ? 'active' : ''}>
-              {RESOURCES[k].title}
-            </a>
-          ))}
-        </nav>
+      <div className="frame">
+        <aside className="side">
+          <nav aria-label="Directory">
+            <ul>
+              <li>
+                <a href="#/overview" className={route.page === 'overview' ? 'active' : ''}>
+                  <span>Overview</span>
+                </a>
+              </li>
+              <li className="side-label">Directory</li>
+              {KINDS.map((k) => (
+                <li key={k}>
+                  <a href={`#/${k}`} className={route.page !== 'overview' && route.kind === k ? 'active' : ''}>
+                    <span>{RESOURCES[k].title}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </aside>
         <main>
           {notice && <div className={'notice ' + notice.kind}>{notice.text}</div>}
           {route.page === 'overview' ? (
@@ -324,31 +330,31 @@ function Login({ onSession }: { onSession: (s: Session) => void }) {
   return (
     <div className="card">
       <h1>Sign in</h1>
-      <p>For directory administrators: accounts that may write the whole directory.</p>
-      <div className="row-actions">
-        <button className="primary" disabled={kerberos === 'trying'} onClick={tryKerberos}>
+      <p className="muted">For directory administrators: accounts that may write the whole directory.</p>
+      <div className="actions">
+        <button disabled={kerberos === 'trying'} onClick={tryKerberos}>
           {kerberos === 'trying' ? 'Checking for a Kerberos ticket…' : 'Sign in with Kerberos'}
         </button>
         {kerberos === 'failed' && !kerberosErr && <span className="hint">No ticket this browser will offer for this host.</span>}
       </div>
-      {kerberosErr && <div className="notice bad spaced">{kerberosErr}</div>}
-      <form onSubmit={submit} className="stack">
-        <label>
-          <span className="k">Login</span>
+      {kerberosErr && <div className="notice bad">{kerberosErr}</div>}
+      <form onSubmit={submit} className="form-col">
+        <label className="field">
+          <span className="field-label">Login</span>
           <input autoComplete="username" value={login} onChange={(e) => setLogin(e.target.value)} placeholder="name or mail address" />
         </label>
-        <label>
-          <span className="k">Password</span>
+        <label className="field">
+          <span className="field-label">Password</span>
           <input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
-        <div className="row-actions">
-          <button className="primary" type="submit" disabled={busy || !login.trim() || !password}>
+        <div className="actions">
+          <button type="submit" disabled={busy || !login.trim() || !password}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
           <span className="hint">A one-time code, where the account has one, goes at the end of the password.</span>
         </div>
       </form>
-      {err && <div className="notice bad spaced">{err}</div>}
+      {err && <div className="notice bad">{err}</div>}
     </div>
   )
 }
@@ -361,9 +367,9 @@ function Overview({ token, me, onFailure }: { token: string; me: WhoAmI | null; 
   }, [token])
 
   const card = (k: string, v: React.ReactNode, href?: string) => (
-    <div className="card" key={k}>
-      <div className="k">{k}</div>
-      <div className="v">{href ? <a href={href}>{v}</a> : v}</div>
+    <div className="tile" key={k}>
+      <span className="hint">{k}</span>
+      <span className="v">{href ? <a href={href}>{v}</a> : v}</span>
     </div>
   )
 
@@ -374,7 +380,7 @@ function Overview({ token, me, onFailure }: { token: string; me: WhoAmI | null; 
         <div className="empty">Loading…</div>
       ) : (
         <>
-          <div className="cards">
+          <div className="tiles">
             {card('Realm', <code>{stats.realm}</code>)}
             {card('Users', stats.users.total, '#/users')}
             {card('Disabled', stats.users.disabled, '#/users')}
@@ -419,7 +425,7 @@ function List({ kind, token, onFailure }: { kind: Kind; token: string; onFailure
         <div className="toolbar">
           <input placeholder="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} />
           <a href={`#/${kind}/+new`}>
-            <button className="primary">New</button>
+            <button>New</button>
           </a>
         </div>
       </h1>
@@ -428,27 +434,31 @@ function List({ kind, token, onFailure }: { kind: Kind; token: string; onFailure
       ) : shown.length === 0 ? (
         <div className="empty">{items.length ? 'Nothing matches the filter.' : 'Nothing here yet.'}</div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              {res.columns.map((c) => (
-                <th key={c}>{c}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((v) => {
-              const key = res.key(v)
-              return (
-                <tr key={key} className="row" onClick={() => (location.hash = `#/${kind}/${key.split('/').map(encodeURIComponent).join('/')}`)}>
-                  {res.cells(v).map((cell, i) => (
-                    <td key={i}>{cell}</td>
+        <div className="panel">
+          <div className="panel-body tight table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  {res.columns.map((c) => (
+                    <th key={c}>{c}</th>
                   ))}
                 </tr>
-              )
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {shown.map((v) => {
+                  const key = res.key(v)
+                  return (
+                    <tr key={key} className="row" onClick={() => (location.hash = `#/${kind}/${key.split('/').map(encodeURIComponent).join('/')}`)}>
+                      {res.cells(v).map((cell, i) => (
+                        <td key={i}>{cell}</td>
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </>
   )
@@ -558,12 +568,12 @@ function Editor({
       {(creating || res.patchable) && (
         <>
           <h2>{creating ? 'New object' : 'Editable fields'}</h2>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} />
+          <textarea className="json" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} />
         </>
       )}
-      <div className="row-actions">
+      <div className="actions">
         {(creating || res.patchable) && (
-          <button className="primary" disabled={busy || !parsed.value} onClick={save}>
+          <button disabled={busy || !parsed.value} onClick={save}>
             {creating ? 'Create' : 'Save'}
           </button>
         )}
@@ -575,7 +585,7 @@ function Editor({
         {!creating && item && <Actions kind={kind} itemKey={itemKey!} item={item} token={token} run={run} onDone={onDone} />}
         <span className="hint">{parsed.error ?? (creating ? 'Fields left out take their defaults.' : 'Only the fields present are changed.')}</span>
       </div>
-      {err && <div className="notice bad spaced">{err}</div>}
+      {err && <div className="notice bad">{err}</div>}
     </>
   )
 }
@@ -591,13 +601,15 @@ function Facts({ kind, item }: { kind: Kind; item: Item }) {
           ? [['id', item.id], ['created', item.createdAt], ['updated', item.updatedAt]]
           : Object.entries(item).filter(([k]) => ['id', 'createdAt', 'updatedAt'].includes(k))
   return (
-    <div className="cards">
-      {facts.map(([k, v]) => (
-        <div className="card" key={k}>
-          <div className="k">{k}</div>
-          <div className="v">{str(v)}</div>
-        </div>
-      ))}
+    <div className="panel">
+      <dl className="kv panel-body">
+        {facts.map(([k, v]) => (
+          <Fragment key={k}>
+            <dt>{k}</dt>
+            <dd>{str(v)}</dd>
+          </Fragment>
+        ))}
+      </dl>
     </div>
   )
 }
@@ -621,6 +633,7 @@ function Actions({
   if (kind === 'users') {
     return (
       <button
+        className="secondary"
         onClick={() =>
           run(async () => {
             const password = prompt(`New password for ${itemKey}. It is expired at once, so its owner chooses their own at the next sign-in.`)
@@ -637,8 +650,11 @@ function Actions({
   if (kind === 'principals') {
     return (
       <>
-        <button onClick={() => run(() => downloadKeytab(itemKey, token))}>Download keytab</button>
+        <button className="secondary" onClick={() => run(() => downloadKeytab(itemKey, token))}>
+          Download keytab
+        </button>
         <button
+          className="secondary"
           onClick={() =>
             run(async () => {
               if (!confirm(`Replace the keys of ${itemKey} with random ones? Keytabs issued before keep working only until their tickets expire.`)) return
@@ -651,6 +667,7 @@ function Actions({
         </button>
         {Boolean(item.lockedUntil) && (
           <button
+            className="secondary"
             onClick={() =>
               run(async () => {
                 await api(`/api/v1/principals/${enc(itemKey)}`, token, { method: 'PATCH', body: JSON.stringify({ unlock: true }) })

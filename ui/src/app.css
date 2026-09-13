@@ -1,70 +1,24 @@
-:root {
-  --bg: #f6f7f9; --panel: #fff; --ink: #1c1f24; --muted: #6b7280; --line: #e3e6ea;
-  --accent: #2456c9; --ok: #1a7f4b; --warn: #b26a00; --bad: #b3261e;
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-* { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--ink); background: var(--bg); }
-a { color: var(--accent); text-decoration: none; }
-header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.brand { font-weight: 600; color: var(--ink); font-size: 15px; }
-.muted { color: var(--muted); font-weight: 400; }
-.status { display: flex; gap: 8px; align-items: center; flex: 1; }
-.who { color: var(--muted); font-size: 13px; display: flex; gap: 10px; align-items: center; }
-.layout { display: grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 45px); }
-nav { border-right: 1px solid var(--line); background: var(--panel); padding: 12px 0; }
-nav a { display: flex; justify-content: space-between; padding: 8px 20px; color: var(--ink); }
-nav a.active { background: #eef2fb; color: var(--accent); font-weight: 600; }
-nav .section { padding: 14px 20px 4px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-nav .count { color: var(--muted); font-variant-numeric: tabular-nums; }
-main { padding: 20px 28px; max-width: 1100px; }
-h1 { font-size: 20px; margin: 0 0 14px; display: flex; align-items: center; gap: 12px; }
-h2 { font-size: 15px; margin: 22px 0 8px; }
-.toolbar { display: flex; gap: 8px; align-items: center; margin-left: auto; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
-.badge.ok { color: var(--ok); border-color: #b9e0c8; background: #eef8f2; }
-.badge.warn { color: var(--warn); border-color: #f0d9a6; background: #fdf6e7; }
-.badge.bad { color: var(--bad); border-color: #efc1bd; background: #fdf0ef; }
-.badge.accent { color: var(--accent); border-color: #c5d3f2; background: #eef2fb; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); display: inline-block; }
-.dot.on { background: var(--ok); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
-.card .k { color: var(--muted); font-size: 12px; }
-.card .v { font-size: 16px; margin-top: 2px; word-break: break-all; }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; }
-tr:last-child td { border-bottom: 0; }
-tr.row { cursor: pointer; }
-tr.row:hover td { background: #f7f9fd; }
-code, .mono { font-family: var(--mono); font-size: 12.5px; }
-button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { color: var(--bad); border-color: #efc1bd; }
-button:disabled { opacity: .5; cursor: default; }
-textarea { width: 100%; min-height: 260px; font-family: var(--mono); font-size: 13px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); resize: vertical; }
-textarea[readonly] { background: #fafbfc; }
-input, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
-.notice { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; border: 1px solid var(--line); background: var(--panel); }
-.notice.bad { border-color: #efc1bd; background: #fdf0ef; color: var(--bad); }
-.notice.ok { border-color: #b9e0c8; background: #eef8f2; color: var(--ok); }
-.login { max-width: 560px; margin: 40px auto; }
-.login .card { padding: 20px; }
-.login p { color: var(--muted); }
-.login textarea { min-height: 90px; }
-.row-actions { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
-.hint { color: var(--muted); font-size: 12.5px; }
-.empty { color: var(--muted); padding: 24px; text-align: center; background: var(--panel); border: 1px dashed var(--line); border-radius: 8px; }
-.server { margin-bottom: 18px; }
-.server h3 { margin: 0 0 6px; font-size: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.desc { color: var(--muted); }
-/* The console's additions to the shared palette: the sign-in form and the spacing between blocks. */
-.login { margin-top: 40px; }
-.stack { display: grid; gap: 10px; margin-top: 18px; }
-.stack label { display: grid; gap: 4px; }
-.stack .k { color: var(--muted); font-size: 12px; }
-.stack input { width: 100%; }
-.spaced { margin-top: 12px; margin-bottom: 0; }
+/* The console's additions to the shared palette. root.css beside this file is the catalog of
+   elements, copied from gitkeep verbatim and not this console's to edit; what is here is only
+   what the catalog has no word for. Nothing names a colour — the tokens do. */
+
+/* A list's filter and its "New" live inside the h1, on the right, at body size rather than the
+   heading's: an input that inherits 20px/600 from its heading is a heading with a cursor in it. */
+.toolbar { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 14px; font-weight: 400; }
+
+/* An editor's heading names its collection as a link back to the list. The link is ink, not
+   accent: the whole line would otherwise read as one long link with a slash in it. */
 h1 a { color: var(--ink); }
-.cards + h2, .cards + textarea { margin-top: 18px; }
+
+/* A tile's value on the overview: the count, or the realm, one step larger than its label. */
+.tile .v { font-size: 16px; word-break: break-all; }
+
+/* The object editor is a JSON document, not a comment box. */
+textarea.json { min-height: 280px; }
+
+/* An error under a form keeps its distance from the actions above it. */
+form + .notice { margin-top: 12px; }
+
+/* A credential that is missing is a warning, not a failure: the catalog paints .running and
+   .testing in the warn colour, and the console's "none"/"locked" badge is the same thing. */
+.badge.warn { color: #fff; background: var(--warn); border-color: var(--warn); }
