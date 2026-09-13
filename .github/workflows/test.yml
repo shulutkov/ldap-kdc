@@ -52,6 +52,23 @@ jobs:
       - name: test
         run: go test -race ./...
 
+      # The console is committed as a build, so the binary needs no node. That is only safe while
+      # the build is what the sources produce: a stale bundle is a page that disagrees with its code.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: console bundle matches its sources
+        run: |
+          cd ui && npm ci --no-audit --no-fund && npm run build && cd ..
+          if [ -n "$(git status --porcelain -- internal/api/ui/dist)" ]; then
+            echo "internal/api/ui/dist is not what ui/src builds; run make ui and commit the result:"
+            git status --porcelain -- internal/api/ui/dist
+            exit 1
+          fi
+
       # Builds the shipped image and drives it with MIT krb5, OpenLDAP and dig.
       - name: end to end
         run: cd test/e2e && go test -timeout 900s ./...

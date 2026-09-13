@@ -4,7 +4,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 SWAGGER_UI_VERSION ?= 5.32.15
 
-.PHONY: build image test e2e check fmt vet swagger-ui clean
+NODE_BIN ?=
+
+.PHONY: build image test e2e check fmt vet ui swagger-ui clean
 
 ## build: compile the service
 build:
@@ -32,6 +34,13 @@ fmt:
 vet:
 	go vet ./...
 	cd test/e2e && go vet ./...
+
+## ui: rebuild the administrators' console into internal/api/ui/dist, where the binary embeds it.
+## The bundle is committed, so `go build` needs no node; run this after changing ui/src.
+## NODE_BIN points at a node installation's bin directory when node is not on PATH.
+ui:
+	cd ui && PATH="$(NODE_BIN)$(if $(NODE_BIN),:)$$PATH" npm ci --no-audit --no-fund && \
+		PATH="$(NODE_BIN)$(if $(NODE_BIN),:)$$PATH" npm run build
 
 ## swagger-ui: refresh the vendored Swagger UI, which is embedded in the binary.
 ## The files are stored compressed: they are minified bundles nobody reads, and the service

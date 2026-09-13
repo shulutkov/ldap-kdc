@@ -4,7 +4,6 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -12,11 +11,12 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/shulutkov/ldap-kdc/internal/failban"
+	"github.com/shulutkov/ldap-kdc/internal/jws"
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
 	"github.com/shulutkov/ldap-kdc/internal/store"
@@ -29,8 +29,22 @@ type Config struct {
 	Realm    string
 	EncTypes []int32
 
-	// Token, when set, must be presented as a bearer token on every /api request.
+	// Token, when set, is accepted as a bearer token on every /api request, beside an
+	// administrator's session. It is for automation; people sign in.
 	Token string
+
+	// BaseDN is the directory's naming context. Who may use this API is decided against it: an
+	// administrator is an account that may write all of it.
+	BaseDN string
+	// SPN is the service principal Kerberos sign-in is accepted for. Empty turns it off.
+	SPN string
+	// SessionLifetime bounds an administrator's session token.
+	SessionLifetime time.Duration
+	// Limiter throttles failed password sign-ins by source. It is the LDAP front end's limiter,
+	// so a guesser blocked at one door is blocked at both.
+	Limiter *failban.Limiter
+	// UI serves the administrators' console at /ui/.
+	UI bool
 	// Docs serves the OpenAPI document and the Swagger UI that renders it.
 	Docs bool
 	// MinPasswordLength is enforced on every password the API sets.
@@ -54,12 +68,22 @@ type Server struct {
 
 	// spec is the OpenAPI document, rendered once from the route table.
 	spec []byte
+
+	// sig signs administrators' sessions; spn is the parsed sign-in principal.
+	sig *jws.Signer
+	spn krbkeys.Name
 }
 
 // New builds the management server.
-func New(cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) (*Server, error) {
+func New(ctx context.Context, cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) (*Server, error) {
 	if len(cfg.Realm) == 0 {
 		return nil, errors.New("api: realm is required")
+	}
+	if len(cfg.BaseDN) == 0 {
+		return nil, errors.New("api: base DN is required — it is what an administrator is decided against")
+	}
+	if cfg.SessionLifetime <= 0 {
+		cfg.SessionLifetime = defaultSessionLifetime
 	}
 
 	s := &Server{
@@ -72,6 +96,18 @@ func New(cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) (*
 	// The document is built here rather than on request: it cannot change while the process
 	// runs, and a mistake in the route table is then a start-up failure rather than a broken
 	// page found by whoever opened it.
+	// The key is loaded — or created and sealed — here, so a store that cannot hold it fails at
+	// start rather than at the first sign-in.
+	sig, err := jws.LoadOrCreate(ctx, st, metaSigningKey)
+	if err != nil {
+		return nil, fmt.Errorf("api: session signing key: %w", err)
+	}
+	s.sig = sig
+
+	if err := s.ensureSPN(ctx); err != nil {
+		return nil, err
+	}
+
 	spec, err := s.buildSpec()
 	if err != nil {
 		return nil, fmt.Errorf("api: building the OpenAPI document: %w", err)
@@ -120,6 +156,33 @@ func (s *Server) publicRoutes() []route {
 				{status: http.StatusServiceUnavailable, body: new(statusBody), description: "Not ready, with the reason."},
 			},
 		}}},
+		{"POST /api/v1/auth/login", s.handleLogin, []operationDoc{{
+			tag: "session", public: true, summary: "Sign in with a password",
+			description: "Issues an administrator's session token. Only an account that may write the " +
+				"whole directory is admitted, and only with its own password: an application password " +
+				"is refused here, because it skips the account's one-time code. Failed attempts count " +
+				"towards the same per-address block as failed LDAP binds.",
+			request: new(loginRequest),
+			responses: []responseDoc{
+				ok(new(sessionBody), "Signed in."),
+				badRequest,
+				{status: http.StatusUnauthorized, body: new(errorBody), description: "Incorrect login or password."},
+				forbidden,
+				{status: http.StatusTooManyRequests, body: new(errorBody), description: "Too many failed attempts from this address."},
+			},
+		}}},
+		{"GET /api/v1/auth/negotiate", s.handleNegotiate, []operationDoc{{
+			tag: "session", public: true, summary: "Sign in with Kerberos",
+			description: "SPNEGO: answered with a Negotiate challenge, which a browser configured to trust " +
+				"this host answers with the ticket it holds for api.spn. Only this realm's tickets, for " +
+				"accounts that administer the directory, are admitted.",
+			responses: []responseDoc{
+				ok(new(sessionBody), "Signed in."),
+				{status: http.StatusUnauthorized, description: "A Negotiate challenge, or a ticket that did not verify."},
+				forbidden,
+				{status: http.StatusNotFound, body: new(errorBody), description: "Kerberos sign-in is not configured."},
+			},
+		}}},
 		{"GET /metrics", s.handleMetrics, []operationDoc{{
 			tag: "operations", public: true, summary: "Prometheus metrics",
 			responses: []responseDoc{{
@@ -137,6 +200,11 @@ func (s *Server) publicRoutes() []route {
 // matched inside the handler. The document names those actions as the paths they are.
 func (s *Server) apiRoutes() []route {
 	return []route{
+		{"GET /api/v1/auth/whoami", s.handleWhoAmI, []operationDoc{{
+			tag: "session", summary: "Who the API takes the caller to be",
+			responses: []responseDoc{ok(new(whoAmIBody), "The subject and how it authenticated."), unauthorized},
+		}}},
+
 		{"GET /api/v1/stats", s.handleStats, []operationDoc{{
 			tag: "operations", summary: "What the directory holds",
 			responses: []responseDoc{ok(new(statsBody), "Counts and the realm's enctypes."), unauthorized},
@@ -333,6 +401,7 @@ func (s *Server) routes() http.Handler {
 	}
 
 	s.docsRoutes(mux)
+	s.consoleRoutes(mux)
 
 	api := http.NewServeMux()
 	for _, r := range s.apiRoutes() {
@@ -394,29 +463,6 @@ func (s *Server) Addr() net.Addr {
 // Shutdown stops the API, letting in-flight requests finish.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
-}
-
-// authenticate enforces the bearer token when one is configured.
-func (s *Server) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.cfg.Token) == 0 {
-			next.ServeHTTP(w, r)
-
-			return
-		}
-
-		presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		// A constant time comparison keeps the check from leaking the token's prefix through
-		// how long it takes to fail.
-		if !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(s.cfg.Token)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ldap-kdc"`)
-			writeError(w, http.StatusUnauthorized, "a valid bearer token is required")
-
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
 }
 
 // observe records request outcomes and logs failures.

@@ -17,6 +17,10 @@ master.key
 *.key
 ldap-kdc.yaml
 
+# The console's sources and node_modules: the binary embeds the committed bundle under
+# internal/api/ui/dist, so the image build needs none of it
+ui
+
 # Build output and documentation
 /ldap-kdc
 /dist

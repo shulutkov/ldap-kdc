@@ -133,7 +133,7 @@ and no session cookie is set: nobody signed in, and a machine has no browser.
 go build -o ldap-kdc ./cmd/ldap-kdc
 
 cp ldap-kdc.example.yaml ldap-kdc.yaml
-$EDITOR ldap-kdc.yaml          # set server.realm and api.token at least
+$EDITOR ldap-kdc.yaml          # set server.realm at least, and bootstrap an administrator
 
 ./ldap-kdc -c ldap-kdc.yaml --check-config
 ./ldap-kdc -c ldap-kdc.yaml
@@ -218,9 +218,15 @@ without touching anything else the account does.
 
 ## REST reference
 
-Everything under `/api/` requires `Authorization: Bearer <token>` when `api.token` is set.
-`/healthz`, `/readyz` and `/metrics` are always open, so a scraper does not need a credential that
-can change passwords.
+Everything under `/api/v1` requires `Authorization: Bearer <token>`, and there is no anonymous
+access: the token is either a directory administrator's session, from signing in (see
+[Console](#console)), or the management token `api.token`, which is for automation. `/healthz`,
+`/readyz`, `/metrics` and the two sign-in endpoints are open, so a scraper does not need a
+credential that can change passwords.
+
+```sh
+TOKEN=$(curl -s -X POST $API/auth/login -d '{"login":"admin","password":"..."}' | jq -r .token)
+```
 
 The API describes itself. `/api/openapi.json` is an OpenAPI document **generated from the code** --
 the route table and the Go types the handlers decode and encode -- when the service starts, so it
@@ -337,6 +343,55 @@ on any group it belongs to:
 `object` may be `*`, an exact DN, or a subtree that covers the request. `write` governs LDAP modify
 and delete; a user may always change their own attributes without it. Set
 `behaviors.ignorecapabilities` to drop the check entirely.
+
+`write` over the whole base DN (or `*`) is also what makes an account a **directory administrator**
+for the console and the management API. There is deliberately no separate "admins" setting: an
+account an LDAP client can use to rewrite every entry is an administrator whatever else it is
+called, and a second definition would only be a second answer to the same question, waiting to
+disagree with the first. The rule lives in the store, and both doors ask it.
+
+## Console
+
+`/ui/` on the API listener is a small console for directory administrators: accounts, groups,
+principals (with keytab download and re-keying), DNS records and trusts, over the same REST API.
+Only accounts that may write the whole directory can sign in, in one of two ways, and both end in
+the same short-lived session token:
+
+- **Kerberos, through SPNEGO.** Set `api.spn` to `HTTP/` and the host name the console is reached by.
+  The console tries it on arrival, and a browser that trusts the host answers the challenge with the
+  ticket it already holds, so nothing is typed. The principal is created with random keys at start
+  when missing: this service is its own KDC, so there is no keytab file to write, protect or keep in
+  step. Only tickets from this realm are accepted — a trusted realm can issue its users a ticket for
+  this service by referral, and their accounts are not this directory's.
+- **Login and password.** An account name or mail address, and the account's own password with its
+  one-time code appended where it has one. Application passwords are refused here: they exist for
+  programs that cannot be handed a code, and would otherwise be a way past it. Failures count
+  towards the same per-address block as failed LDAP binds (`behaviors.*_failed_binds`).
+
+A browser only negotiates with hosts it has been told to trust, for example:
+
+```text
+Chrome / Edge   AuthServerAllowlist = ldap-kdc.example.com       (policy)
+Firefox         network.negotiate-auth.trusted-uris = ldap-kdc.example.com
+Safari, macOS   works with a ticket from kinit, or the Kerberos SSO extension
+```
+
+The session lasts `api.session_lifetime` (1h), is kept for the tab only, and is **re-checked against
+the directory on every request**: an administrator who is disabled, removed, or whose group loses
+the capability is out at the next click, not when the token expires. Sessions are signed with their
+own key, never the OIDC provider's, so an id token issued to a relying party cannot be presented here.
+The page loads under a policy that lets it reach itself and nothing else (`default-src 'none'`,
+`connect-src 'self'`, `frame-ancestors 'none'`), and every change it makes is an ordinary API request
+authorised on its own — hiding a button is a courtesy, never the boundary.
+
+The console is React (`ui/`, Vite + TypeScript) and its **build is committed** under
+`internal/api/ui/dist`, so `go build` needs no node and an air-gapped host still serves it. After
+changing `ui/src`, run `make ui` (with `NODE_BIN=/path/to/node/bin` when node is not on `PATH`) and
+commit the result; CI rebuilds the bundle and fails when it differs from what is committed. Set
+`api.ui: false` to leave it out.
+
+> **Behaviour change.** The management API used to be open when `api.token` was empty. It no longer
+> answers anonymously at all: sign in as an administrator, or set `api.token` for automation.
 
 ## Operational notes
 
@@ -610,7 +665,11 @@ internal/krbkeys  principal names, salts, string-to-key, keytab encoding
 internal/kdc      AS and TGS exchanges, PAC, S4U, cross-realm, replay cache
 internal/kpasswd  RFC 3244 password changing
 internal/ldapsrv  LDAP handler, entry construction, failed-bind throttling
-internal/api      REST management interface, OpenAPI document, embedded Swagger UI
+internal/api      REST management interface, administrator sign-in, OpenAPI document,
+                  embedded Swagger UI and console
+internal/jws      ES256 signing and verification, one sealed key per issuer
+internal/failban  failed-attempt throttling shared by every door that takes a password
+ui                the administrators' console (React); its build is committed under internal/api/ui/dist
 internal/secret   master key handling and AEAD sealing
 ```
 

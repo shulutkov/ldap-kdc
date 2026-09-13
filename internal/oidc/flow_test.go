@@ -308,7 +308,7 @@ func TestDiscoveryDescribesThisProvider(t *testing.T) {
 	if err := json.Unmarshal([]byte(read(t, keys)), &jwks); err != nil {
 		t.Fatal(err)
 	}
-	if len(jwks.Keys) != 1 || jwks.Keys[0]["kid"] != h.srv.sig.kid || jwks.Keys[0]["alg"] != "ES256" {
+	if len(jwks.Keys) != 1 || jwks.Keys[0]["kid"] != h.srv.sig.KeyID() || jwks.Keys[0]["alg"] != "ES256" {
 		t.Errorf("jwks = %v", jwks.Keys)
 	}
 }

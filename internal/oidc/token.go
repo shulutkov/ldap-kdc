@@ -203,7 +203,7 @@ func (s *Server) mint(audience string, c *subjectClaims, now, authTime time.Time
 		claims["nonce"] = nonce
 	}
 
-	return s.sig.sign(claims)
+	return s.sig.Sign(claims)
 }
 
 func (s *Server) tokenError(w http.ResponseWriter, status int, code, desc string) {

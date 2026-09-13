@@ -70,6 +70,7 @@ var (
 	unauthorized = responseDoc{status: http.StatusUnauthorized, body: new(errorBody), description: "A valid bearer token is required."}
 	notFound     = responseDoc{status: http.StatusNotFound, body: new(errorBody), description: "No such object."}
 	conflict     = responseDoc{status: http.StatusConflict, body: new(errorBody), description: "The object exists, or the name is already taken."}
+	forbidden    = responseDoc{status: http.StatusForbidden, body: new(errorBody), description: "Authenticated, but not a directory administrator."}
 )
 
 // Path and query parameters, declared as the structures the reflector reads them from.
@@ -161,10 +162,12 @@ func (s *Server) buildSpec() ([]byte, error) {
 		WithVersion("v1").
 		WithDescription(apiDescription)
 
-	spec.SetHTTPBearerTokenSecurity(securityScheme, "",
-		"The token from api.token in the configuration. With no token configured the API is open and this is ignored.")
+	spec.SetHTTPBearerTokenSecurity(securityScheme, "JWT",
+		"An administrator's session token from /api/v1/auth/login or /api/v1/auth/negotiate, or the "+
+			"management token from api.token. There is no anonymous access.")
 
 	spec.WithTags(
+		openapi3.Tag{Name: "session", Description: strPtr("Signing in: only directory administrators, with a password or a Kerberos ticket.")},
 		openapi3.Tag{Name: "users", Description: strPtr("Directory accounts and their credentials.")},
 		openapi3.Tag{Name: "groups", Description: strPtr("POSIX groups, which may include other groups.")},
 		openapi3.Tag{Name: "principals", Description: strPtr("Kerberos identities: policy, keys and keytabs.")},
@@ -248,5 +251,6 @@ const apiDescription = "The REST interface to one directory served over both LDA
 	"LDAP simple bind compares against and the long-term keys a Kerberos AS exchange needs: one " +
 	"cannot be derived from the other, and an account holding only one of them authenticates over " +
 	"one protocol and not the other.\n\n" +
-	"Requests under `/api` carry `Authorization: Bearer <token>` when the service is configured " +
-	"with one. The probes, the metrics and this documentation never require it."
+	"Requests under `/api` carry `Authorization: Bearer <token>`: an administrator's session from " +
+	"one of the sign-in operations, or the management token. The probes, the metrics, the sign-in " +
+	"operations and this documentation require neither."

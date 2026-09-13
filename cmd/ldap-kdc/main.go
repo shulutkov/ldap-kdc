@@ -22,6 +22,7 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/bootstrap"
 	"github.com/shulutkov/ldap-kdc/internal/config"
 	"github.com/shulutkov/ldap-kdc/internal/dnssrv"
+	"github.com/shulutkov/ldap-kdc/internal/failban"
 	"github.com/shulutkov/ldap-kdc/internal/kdc"
 	"github.com/shulutkov/ldap-kdc/internal/kpasswd"
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
@@ -172,8 +173,19 @@ func run(cfg *config.Config) error {
 		log.Info().Msg("stopped")
 	}()
 
+	// One limiter for every door that takes a password. A guesser blocked from binding over LDAP
+	// must not simply carry on at the console's sign-in with the same list.
+	limiter := failban.New(failban.Config{
+		Enabled:    cfg.Behaviors.LimitFailedBinds,
+		Threshold:  cfg.Behaviors.NumberOfFailedBinds,
+		Window:     cfg.Behaviors.PeriodOfFailedBinds,
+		BlockFor:   cfg.Behaviors.BlockFailedBindsFor,
+		PruneEvery: cfg.Behaviors.PruneSourceTableEvery,
+		PruneOlder: cfg.Behaviors.PruneSourcesOlderThan,
+	})
+
 	if cfg.LDAP.Enabled || cfg.LDAPS.Enabled {
-		srv, err := startLDAP(ctx, cfg, domainSID, encTypes, st, log, m)
+		srv, err := startLDAP(ctx, cfg, domainSID, encTypes, limiter, st, log, m)
 		if err != nil {
 			return err
 		}
@@ -261,13 +273,18 @@ func run(cfg *config.Config) error {
 			}
 		}
 
-		srv, err := api.New(api.Config{
+		srv, err := api.New(ctx, api.Config{
 			Listen:            cfg.API.Listen,
 			TLS:               apiTLS,
 			Realm:             cfg.Server.Realm,
 			EncTypes:          encTypes,
 			Token:             cfg.API.Token,
 			Docs:              cfg.API.Docs,
+			UI:                cfg.API.UI,
+			BaseDN:            cfg.Server.BaseDN,
+			SPN:               cfg.API.SPN,
+			SessionLifetime:   cfg.API.SessionLifetime,
+			Limiter:           limiter,
 			MinPasswordLength: cfg.KPasswd.MinPasswordLength,
 			DNSZones:          servedZones(cfg),
 			DNSDefaultTTL:     int(cfg.DNS.TTL / time.Second),
@@ -447,6 +464,7 @@ func startLDAP(
 	cfg *config.Config,
 	domainSID string,
 	encTypes []int32,
+	limiter *failban.Limiter,
 	st *store.Store,
 	log zerolog.Logger,
 	m *metrics.Metrics,
@@ -479,6 +497,7 @@ func startLDAP(
 			AnonymousDSE:          cfg.Server.AnonymousDSE,
 			IgnoreCapabilities:    cfg.Behaviors.IgnoreCapabilities,
 			EncTypes:              encTypes,
+			Limiter:               limiter,
 			LimitFailedBinds:      cfg.Behaviors.LimitFailedBinds,
 			NumberOfFailedBinds:   cfg.Behaviors.NumberOfFailedBinds,
 			PeriodOfFailedBinds:   cfg.Behaviors.PeriodOfFailedBinds,

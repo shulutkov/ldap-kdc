@@ -201,7 +201,9 @@ type API struct {
 	CertPath string `yaml:"cert_path" env:"CERT_PATH"`
 	KeyPath  string `yaml:"key_path" env:"KEY_PATH"`
 
-	// Token, when set, is required as "Authorization: Bearer <token>" on every request.
+	// Token, when set, is accepted as "Authorization: Bearer <token>" beside administrators'
+	// sessions. It is for automation. Without it, only an administrator who has signed in gets
+	// in: the API never answers anonymously.
 	Token string `yaml:"token" env:"TOKEN"`
 
 	// TokenFile reads Token from a file, so the secret need not sit in the configuration.
@@ -212,6 +214,20 @@ type API struct {
 	// turn it off on a service whose management port is reachable more widely than its
 	// administrators.
 	Docs bool `yaml:"docs" env:"DOCS" envDefault:"true"`
+
+	// UI serves the directory administrators' console at /ui/. Only accounts that may write the
+	// whole directory can sign in to it.
+	UI bool `yaml:"ui" env:"UI" envDefault:"true"`
+
+	// SPN is the service principal Kerberos sign-in to the console is accepted for:
+	// "HTTP/<host name the console is reached by>", which is the name a browser asks the KDC for.
+	// It is created with random keys on start when missing — this service is its own KDC, so no
+	// keytab is written anywhere. Empty turns Kerberos sign-in off.
+	SPN string `yaml:"spn" env:"SPN"`
+
+	// SessionLifetime bounds an administrator's session. Short, because the session can reset
+	// every account's password.
+	SessionLifetime time.Duration `yaml:"session_lifetime" env:"SESSION_LIFETIME" envDefault:"1h"`
 }
 
 // OIDCClient is a relying party the provider will issue tokens to.

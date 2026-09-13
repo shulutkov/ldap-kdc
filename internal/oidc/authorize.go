@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -219,39 +220,18 @@ func (s *Server) check(ctx context.Context, login, password string) (store.Outco
 
 // lookup resolves a login to an account by name or by mail address. Shared with the client
 // credentials grant, where the same two spellings are the ones a service account will be
-// configured with.
+// configured with — and with every other door through store.UserByLogin.
 func (s *Server) lookup(ctx context.Context, login string) *store.User {
-	if login == "" {
-		return nil
-	}
-	if u, err := s.st.GetUser(ctx, login); err == nil {
-		return u
-	}
-
-	return s.userByMail(ctx, login)
-}
-
-// userByMail finds an account by its mail address. A miss is not an error here: the caller has
-// already failed to find it by name, and both misses are one refusal.
-func (s *Server) userByMail(ctx context.Context, mail string) *store.User {
-	users, err := s.st.ListUsers(ctx)
+	u, err := s.st.UserByLogin(ctx, login)
 	if err != nil {
-		s.log.Error().Err(err).Msg("cannot read the directory to resolve a login")
+		if !errors.Is(err, store.ErrNotFound) {
+			s.log.Error().Err(err).Msg("cannot read the directory to resolve a login")
+		}
 
 		return nil
 	}
-	for i := range users {
-		if strings.EqualFold(users[i].Mail, mail) {
-			u, err := s.st.GetUser(ctx, users[i].Name)
-			if err != nil {
-				return nil
-			}
 
-			return u
-		}
-	}
-
-	return nil
+	return u
 }
 
 // issueCode completes the authorization: mint a code and send the browser back.

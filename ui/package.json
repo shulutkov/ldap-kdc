@@ -1,0 +1,23 @@
+{
+  "name": "ldap-kdc-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The directory administrators' console for ldap-kdc: accounts, groups, principals, DNS and trusts over the management API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

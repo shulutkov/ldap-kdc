@@ -170,6 +170,18 @@ api:
   # the management port is reachable more widely than its administrators.
   docs: true
 
+  # The directory administrators' console at /ui/. Only accounts that may write the whole directory
+  # can sign in: with a password, or with the Kerberos ticket their browser holds.
+  ui: true
+
+  # The service principal Kerberos sign-in to the console is accepted for: HTTP/ and the host name
+  # the console is reached by. It is created with random keys on start when missing -- this service
+  # is its own KDC, so no keytab is written anywhere. Leave it out to sign in with passwords only.
+  # spn: HTTP/ldap-kdc.example.com
+
+  # How long an administrator's session lasts. Short, because it can reset any account's password.
+  session_lifetime: 1h
+
 # The OpenID Connect provider: the directory's accounts, served to browsers, so that ONE sign-in
 # reaches every interface in front of it. A provider that keeps no browser session makes each of
 # them ask for a password again, however recently the person typed one.

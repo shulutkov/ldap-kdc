@@ -13,6 +13,7 @@ import (
 	"github.com/glauth/ldap"
 	"github.com/rs/zerolog"
 
+	"github.com/shulutkov/ldap-kdc/internal/failban"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 )
@@ -37,6 +38,11 @@ type Config struct {
 	// EncTypes is used when a password is set through LDAP, so the Kerberos keys move with it.
 	EncTypes []int32
 
+	// Limiter throttles failed binds by source. It is shared with every other door that takes a
+	// password, so a guesser blocked here cannot carry on at the API's sign-in; when it is nil, one
+	// is built from the fields below for this front end alone.
+	Limiter *failban.Limiter
+
 	LimitFailedBinds      bool
 	NumberOfFailedBinds   int
 	PeriodOfFailedBinds   time.Duration
@@ -52,7 +58,7 @@ type Handler struct {
 	log     zerolog.Logger
 	metrics *metrics.Metrics
 	entries *entryBuilder
-	limiter *bindLimiter
+	limiter *failban.Limiter
 }
 
 var emailPattern = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
@@ -61,13 +67,25 @@ var emailPattern = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-
 func NewHandler(cfg Config, st *store.Store, log zerolog.Logger, m *metrics.Metrics) *Handler {
 	cfg.BaseDN = strings.ToLower(cfg.BaseDN)
 
+	limiter := cfg.Limiter
+	if limiter == nil {
+		limiter = failban.New(failban.Config{
+			Enabled:    cfg.LimitFailedBinds,
+			Threshold:  cfg.NumberOfFailedBinds,
+			Window:     cfg.PeriodOfFailedBinds,
+			BlockFor:   cfg.BlockFailedBindsFor,
+			PruneEvery: cfg.PruneSourceTableEvery,
+			PruneOlder: cfg.PruneSourcesOlderThan,
+		})
+	}
+
 	return &Handler{
 		cfg:     cfg,
 		st:      st,
 		log:     log.With().Str("component", "ldap").Logger(),
 		metrics: m,
 		entries: &entryBuilder{cfg: cfg, st: st},
-		limiter: newBindLimiter(cfg),
+		limiter: limiter,
 	}
 }
 
@@ -80,7 +98,7 @@ func (h *Handler) Bind(bindDN, bindSimplePw string, conn net.Conn) (ldap.LDAPRes
 	ctx := context.Background()
 	bindDN = strings.ToLower(strings.TrimSpace(bindDN))
 
-	if h.limiter.blocked(conn) {
+	if h.limiter.Blocked(sourceAddr(conn)) {
 		h.result("bind", "blocked")
 
 		return ldap.LDAPResultUnwillingToPerform, nil
@@ -104,7 +122,7 @@ func (h *Handler) Bind(bindDN, bindSimplePw string, conn net.Conn) (ldap.LDAPRes
 
 	user, code := h.findBindUser(ctx, bindDN, true)
 	if code != ldap.LDAPResultSuccess {
-		h.limiter.noteFailure(conn)
+		h.limiter.NoteFailure(sourceAddr(conn))
 		h.result("bind", "unknown-user")
 
 		return code, nil
@@ -132,12 +150,12 @@ func (h *Handler) Bind(bindDN, bindSimplePw string, conn net.Conn) (ldap.LDAPRes
 	h.result("bind", string(outcome))
 
 	if !outcome.Granted() {
-		h.limiter.noteFailure(conn)
+		h.limiter.NoteFailure(sourceAddr(conn))
 
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
-	h.limiter.noteSuccess(conn)
+	h.limiter.NoteSuccess(sourceAddr(conn))
 
 	return ldap.LDAPResultSuccess, nil
 }
@@ -154,7 +172,7 @@ func (h *Handler) Search(boundDN string, req ldap.SearchRequest, conn net.Conn) 
 	searchBaseDN := strings.ToLower(strings.TrimSpace(req.BaseDN))
 	anonymous := len(boundDN) == 0
 
-	if h.limiter.blocked(conn) {
+	if h.limiter.Blocked(sourceAddr(conn)) {
 		h.result("search", "blocked")
 
 		// The library reports the result code only when an error accompanies it, so every
@@ -217,7 +235,7 @@ func (h *Handler) Search(boundDN string, req ldap.SearchRequest, conn net.Conn) 
 	}
 
 	if !h.cfg.IgnoreCapabilities {
-		allowed, err := h.hasCapability(ctx, boundUser, "search", searchBaseDN)
+		allowed, err := h.st.HasCapability(ctx, boundUser, "search", searchBaseDN)
 		if err != nil {
 			h.result("search", "error")
 
@@ -378,7 +396,7 @@ func (h *Handler) Modify(boundDN string, req ldap.ModifyRequest, conn net.Conn) 
 	// capability, which is how an administrator account is distinguished from an ordinary one.
 	self := kind == "user" && strings.EqualFold(name, actor.Name)
 	if !self {
-		allowed, err := h.hasCapability(ctx, actor, "write", dn)
+		allowed, err := h.st.HasCapability(ctx, actor, "write", dn)
 		if err != nil {
 			h.result("modify", "error")
 
@@ -472,7 +490,7 @@ func (h *Handler) Delete(boundDN, deleteDN string, conn net.Conn) (ldap.LDAPResu
 		return ldap.LDAPResultNoSuchObject, nil
 	}
 
-	allowed, err := h.hasCapability(ctx, actor, "write", dn)
+	allowed, err := h.st.HasCapability(ctx, actor, "write", dn)
 	if err != nil {
 		h.result("delete", "error")
 
@@ -571,57 +589,6 @@ func (h *Handler) findBindUser(ctx context.Context, dn string, checkGroup bool) 
 	}
 
 	return user, ldap.LDAPResultSuccess
-}
-
-// hasCapability reports whether the account, or any group it belongs to, grants the action on the
-// object.
-func (h *Handler) hasCapability(ctx context.Context, u *store.User, action, object string) (bool, error) {
-	if capabilityMatches(u.Capabilities, action, object) {
-		return true, nil
-	}
-
-	gids, err := h.st.UserGIDs(ctx, u)
-	if err != nil {
-		return false, err
-	}
-
-	for _, gid := range gids {
-		g, err := h.st.GetGroupByGID(ctx, gid)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-
-			return false, err
-		}
-		if capabilityMatches(g.Capabilities, action, object) {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-// capabilityMatches reports whether a capability list grants the action on the object. A capability
-// on a subtree covers everything beneath it.
-func capabilityMatches(caps []store.Capability, action, object string) bool {
-	for _, c := range caps {
-		if !strings.EqualFold(c.Action, action) {
-			continue
-		}
-
-		target := strings.ToLower(c.Object)
-		switch {
-		case target == "*":
-			return true
-		case target == object:
-			return true
-		case strings.HasSuffix(object, ","+target):
-			return true
-		}
-	}
-
-	return false
 }
 
 // classifyDN says whether a DN names a user or a group, and what it is called.

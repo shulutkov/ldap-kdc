@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	testRealm = "EXAMPLE.COM"
-	testToken = "a-secret-management-token"
+	testBaseDN = "dc=example,dc=com"
+	testRealm  = "EXAMPLE.COM"
+	testToken  = "a-secret-management-token"
 )
 
 type harness struct {
@@ -35,6 +36,13 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	return newHarnessWith(t, nil)
+}
+
+// newHarnessWith is newHarness with the server's configuration adjusted before it starts.
+func newHarnessWith(t *testing.T, adjust func(*Config)) *harness {
 	t.Helper()
 
 	ctx := context.Background()
@@ -69,10 +77,15 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("EnsureRealm: %v", err)
 	}
 
-	srv, err := New(Config{
-		Listen: "127.0.0.1:0", Realm: testRealm, EncTypes: etypes,
-		Token: testToken, MinPasswordLength: 8, Docs: true,
-	}, st, log, metrics.New())
+	cfg := Config{
+		Listen: "127.0.0.1:0", Realm: testRealm, EncTypes: etypes, BaseDN: testBaseDN,
+		Token: testToken, MinPasswordLength: 8, Docs: true, UI: true,
+	}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+
+	srv, err := New(ctx, cfg, st, log, metrics.New())
 	if err != nil {
 		t.Fatalf("api: %v", err)
 	}

@@ -26,6 +26,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/shulutkov/ldap-kdc/internal/jws"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 )
@@ -80,7 +81,7 @@ type Server struct {
 	log     zerolog.Logger
 	metrics *metrics.Metrics
 
-	sig      *signer
+	sig      *jws.Signer
 	sessions *sessions
 	codes    *codes
 	pending  *pendingRequests
@@ -118,7 +119,7 @@ func New(ctx context.Context, cfg Config, st *store.Store, log zerolog.Logger, m
 		}
 	}
 
-	sig, err := loadOrCreateSigner(ctx, st)
+	sig, err := jws.LoadOrCreate(ctx, st, MetaSigningKey)
 	if err != nil {
 		return nil, err
 	}

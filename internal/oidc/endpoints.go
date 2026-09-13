@@ -51,7 +51,7 @@ func (s *Server) clientAuth() []string {
 }
 
 // keys publishes the public half of the signing key.
-func (s *Server) keys(w http.ResponseWriter, _ *http.Request) { writeJSON(w, s.sig.jwks()) }
+func (s *Server) keys(w http.ResponseWriter, _ *http.Request) { writeJSON(w, s.sig.JWKS()) }
 
 // userinfo answers with the same claims the token carries, for a client that would rather ask than
 // read the token. The access token is this provider's own, so it is verified the only way that
