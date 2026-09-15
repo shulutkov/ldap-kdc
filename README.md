@@ -141,7 +141,7 @@ and no session cookie is set: nobody signed in, and a machine has no browser.
 ## Getting started
 
 ```sh
-go build -o ldap-kdc ./cmd/ldap-kdc
+make build                     # the console (needs node), then the binary that embeds it
 
 cp ldap-kdc.example.yaml ldap-kdc.yaml
 $EDITOR ldap-kdc.yaml          # set server.realm at least, and bootstrap an administrator
@@ -405,11 +405,13 @@ The page loads under a policy that lets it reach itself and nothing else (`defau
 `connect-src 'self'`, `frame-ancestors 'none'`), and every change it makes is an ordinary API request
 authorised on its own — hiding a button is a courtesy, never the boundary.
 
-The console is React (`ui/`, Vite + TypeScript) and its **build is committed** under
-`internal/api/ui/dist`, so `go build` needs no node and an air-gapped host still serves it. After
-changing `ui/src`, run `make ui` (with `NODE_BIN=/path/to/node/bin` when node is not on `PATH`) and
-commit the result; CI rebuilds the bundle and fails when it differs from what is committed. Set
-`api.ui: false` to leave it out.
+The console is React (`ui/`, Vite + TypeScript), and its build is **not committed**: `make build`
+runs `make ui` first and embeds the fresh bundle from `internal/api/ui/dist`, so a binary always
+carries the console its sources describe and an air-gapped host still serves it. Build the service
+with `make build` — add `NODE_BIN=/path/to/node/bin` when node is not on `PATH`; a bare `go build`
+has no console to embed. `make test` and `make vet` need the packages to compile, not the console,
+so where no build is present they leave a placeholder page there. The image build runs `make build`
+too. Set `api.ui: false` to leave the console out.
 
 > **Behaviour change.** The management API used to be open when `api.token` was empty. It no longer
 > answers anonymously at all: sign in as an administrator, or set `api.token` for automation.
@@ -692,14 +694,14 @@ internal/api      REST management interface, administrator sign-in, OpenAPI docu
                   embedded Swagger UI and console
 internal/jws      ES256 signing and verification, one sealed key per issuer
 internal/failban  failed-attempt throttling shared by every door that takes a password
-ui                the administrators' console (React); its build is committed under internal/api/ui/dist
+ui                the administrators' console (React), built into internal/api/ui/dist by make build
 internal/secret   master key handling and AEAD sealing
 ```
 
 ## Tests
 
 ```sh
-go test ./...     # unit and integration, no container runtime needed
+make test         # unit and integration, no container runtime or node needed
 make e2e          # end to end against the reference clients
 ```
 

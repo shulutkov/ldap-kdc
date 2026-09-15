@@ -16,7 +16,7 @@ ldap-kdc.yaml
 *.crt
 *.key
 
-# The console's dependencies; its built bundle under internal/api/ui/dist is committed
+# The console's dependencies, and its build, which make build produces and is never committed
 ui/node_modules/
 internal/api/ui/dist/
 

@@ -6,10 +6,11 @@ import (
 	"net/http"
 )
 
-// The console is a React application (ui/, Vite + TypeScript) whose BUILD is compiled into the
-// binary and committed with the source: `go build` needs no node, and a service deployed where the
-// internet is not still serves its pages from itself. `make ui` rebuilds the bundle when the
-// sources change, and CI fails when the committed bundle is not what the sources build.
+// The console is a React application (ui/, Vite + TypeScript). Its build is not committed: `make
+// build` runs `make ui` and embeds what that produces, so a binary always carries the console its
+// sources describe, and a service deployed where the internet is not still serves its pages from
+// itself. `make test` and `make vet` need this package to compile, not the console, so where no build
+// is present they leave a placeholder page here instead.
 //
 // The page is a courtesy, not a boundary. Everything it does it does through the API, as the
 // administrator who signed in, and every one of those requests is authorised on its own.

@@ -42,33 +42,17 @@ jobs:
             exit 1
           fi
 
+      # Through make, as a developer runs them: the console's build is not committed, and these
+      # targets put a placeholder where the binary embeds it, so the Go packages compile without node.
       - name: vet
-        run: |
-          go vet ./...
-          cd test/e2e && go vet ./...
+        run: make vet
 
       # The service is a set of concurrent listeners over one store, which is exactly the shape of
       # code the race detector earns its keep on.
       - name: test
-        run: go test -race ./...
+        run: make test
 
-      # The console is committed as a build, so the binary needs no node. That is only safe while
-      # the build is what the sources produce: a stale bundle is a page that disagrees with its code.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: console bundle matches its sources
-        run: |
-          cd ui && npm ci --no-audit --no-fund && npm run build && cd ..
-          if [ -n "$(git status --porcelain -- internal/api/ui/dist)" ]; then
-            echo "internal/api/ui/dist is not what ui/src builds; run make ui and commit the result:"
-            git status --porcelain -- internal/api/ui/dist
-            exit 1
-          fi
-
-      # Builds the shipped image and drives it with MIT krb5, OpenLDAP and dig.
+      # Builds the shipped image — which runs make build, console included — and drives it with MIT
+      # krb5, OpenLDAP and dig.
       - name: end to end
-        run: cd test/e2e && go test -timeout 900s ./...
+        run: make e2e

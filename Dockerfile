@@ -9,11 +9,21 @@ ARG GO_VERSION=1.27
 # that costs nothing, and it keeps a multi-architecture build from running an emulated toolchain.
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 
+# The binary is built the one way it is built anywhere, `make build`, which builds the console it
+# embeds first — so the builder needs make and node beside Go. Node's output is JavaScript, so it
+# runs on the build platform like everything else in this stage.
+RUN apk add --no-cache make nodejs npm
+
 WORKDIR /src
 
-# Dependencies resolve in their own layer, so a source change does not re-download them.
+# Dependencies resolve in their own layers, so a source change does not re-download them: the Go
+# modules, then the console's packages through the same make target a local build uses.
 COPY go.mod go.sum ./
 RUN go mod download
+
+COPY Makefile ./
+COPY ui/package.json ui/package-lock.json ./ui/
+RUN make ui-deps
 
 COPY . .
 
@@ -21,11 +31,13 @@ ARG VERSION=dev
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-        -trimpath \
-        -ldflags "-s -w -X main.version=${VERSION}" \
-        -o /out/ldap-kdc \
-        ./cmd/ldap-kdc
+# There is no git in the context to describe a version from, so it is passed in; the linker flags add
+# stripping and drop the build paths, which a developer's `make build` keeps.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} make build \
+        VERSION=${VERSION} \
+        BINARY=/out/ldap-kdc \
+        BUILDFLAGS=-trimpath \
+        LDFLAGS="-s -w -X main.version=${VERSION}"
 
 # A scratch image has no mkdir, so the directory tree is laid out here and copied over whole.
 #
