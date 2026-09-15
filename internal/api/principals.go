@@ -15,15 +15,15 @@ type createPrincipalRequest struct {
 	// re-keys this principal too.
 	UserName string `json:"userName,omitempty" description:"Links the principal to an account, so setting that account's password re-keys this principal too."`
 
-	Enabled         *bool `json:"enabled,omitempty"`
-	RequiresPreAuth *bool `json:"requiresPreAuth,omitempty"`
+	Enabled         *bool `json:"enabled,omitempty" default:"true"`
+	RequiresPreAuth *bool `json:"requiresPreAuth,omitempty" default:"true"`
 
-	AllowForwardable   *bool `json:"allowForwardable,omitempty"`
-	AllowProxiable     *bool `json:"allowProxiable,omitempty"`
-	AllowRenewable     *bool `json:"allowRenewable,omitempty"`
-	AllowPostdate      *bool `json:"allowPostdate,omitempty"`
-	OKAsDelegate       *bool `json:"okAsDelegate,omitempty"`
-	OKToAuthAsDelegate *bool `json:"okToAuthAsDelegate,omitempty"`
+	AllowForwardable   *bool `json:"allowForwardable,omitempty" default:"true"`
+	AllowProxiable     *bool `json:"allowProxiable,omitempty" default:"true"`
+	AllowRenewable     *bool `json:"allowRenewable,omitempty" default:"true"`
+	AllowPostdate      *bool `json:"allowPostdate,omitempty" default:"false"`
+	OKAsDelegate       *bool `json:"okAsDelegate,omitempty" default:"false"`
+	OKToAuthAsDelegate *bool `json:"okToAuthAsDelegate,omitempty" default:"false"`
 
 	AllowedToDelegateTo  []string `json:"allowedToDelegateTo,omitempty"`
 	AllowedToImpersonate []string `json:"allowedToImpersonate,omitempty"`

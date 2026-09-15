@@ -31,7 +31,7 @@ type createUserRequest struct {
 	// ForceChange marks the password expired so the account has to choose its own at first
 	// login. It defaults to true, because a password an administrator typed is one the
 	// administrator knows.
-	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password so its owner chooses their own at first login. Defaults to true."`
+	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password so its owner chooses their own at first login. Defaults to true." default:"true"`
 	// Aliases are further Kerberos names the account answers to.
 	Aliases []string `json:"aliases,omitempty" description:"Further Kerberos names the account answers to."`
 }
@@ -62,7 +62,7 @@ type setPasswordRequest struct {
 	// next login. It defaults to true: a password set through this interface is one an
 	// administrator chose and therefore knows, and FreeIPA expires an administrative reset for
 	// the same reason.
-	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password immediately. Defaults to true."`
+	ForceChange *bool `json:"forceChange,omitempty" description:"Expire the password immediately. Defaults to true." default:"true"`
 }
 
 // passwordExpiry works out when a password set through this interface should expire.

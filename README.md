@@ -357,6 +357,16 @@ principals (with keytab download and re-keying), DNS records and trusts, over th
 Only accounts that may write the whole directory can sign in, in one of two ways, and both end in
 the same short-lived session token:
 
+Objects are edited in **forms, not JSON**, and the forms come from the API itself: the console reads
+the OpenAPI document (`GET /api/v1/openapi.json`, served behind the token, so it works with
+`api.docs: false`) and renders each operation's request body with react-jsonschema-form. The fields
+an operation accepts, their types, which are required, their descriptions and the defaults the
+service applies all come from the Go types the handlers decode — the page keeps no second list of
+any of it, so a form cannot offer a field the API does not take. An edit sends only what changed.
+rjsf's usual ajv validator is left out on purpose: ajv compiles schemas with `new Function`, which the
+console's content-security policy refuses, so the browser checks what the markup can express
+(required fields, numbers) and the API decides the rest and says why.
+
 - **Kerberos, through SPNEGO.** Set `api.spn` to `HTTP/` and the host name the console is reached by.
   The console tries it on arrival, and a browser that trusts the host answers the challenge with the
   ticket it already holds, so nothing is typed. The principal is created with random keys at start

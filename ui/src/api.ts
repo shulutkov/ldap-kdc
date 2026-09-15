@@ -103,3 +103,40 @@ export function describe(e: unknown): string {
   }
   return String(e)
 }
+
+// ---- the API's own description ---------------------------------------------------------------------
+
+export type JSONSchema = Record<string, unknown>
+
+type Operation = { requestBody?: { content?: Record<string, { schema?: JSONSchema }> } }
+
+export type OpenAPI = {
+  paths: Record<string, Record<string, Operation>>
+  components: { schemas: Record<string, JSONSchema> }
+}
+
+let specCache: { token: string; spec: Promise<OpenAPI> } | null = null
+
+// loadSpec fetches the OpenAPI document once per session. The console builds every form from it, so a
+// form always describes the API it talks to, whatever version of the service is answering.
+export function loadSpec(token: string): Promise<OpenAPI> {
+  if (!specCache || specCache.token !== token) {
+    const spec = api<OpenAPI>('/api/v1/openapi.json', token)
+    specCache = { token, spec }
+    spec.catch(() => {
+      specCache = null
+    })
+  }
+  return specCache.spec
+}
+
+// requestSchema is the body one operation accepts, as a schema a form can render on its own: the
+// operation's schema with the document's components beside it, so the references inside it resolve.
+export function requestSchema(spec: OpenAPI, method: 'post' | 'patch', path: string): JSONSchema | null {
+  const body = spec.paths[path]?.[method]?.requestBody?.content?.['application/json']?.schema
+  if (!body) return null
+  const ref = typeof body.$ref === 'string' ? body.$ref : null
+  const own = ref ? spec.components.schemas[ref.replace('#/components/schemas/', '')] : body
+  if (!own) return null
+  return { ...own, components: spec.components }
+}

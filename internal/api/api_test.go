@@ -415,6 +415,33 @@ func TestTheDocumentationIsServed(t *testing.T) {
 	}
 }
 
+func TestTheConsoleReadsTheDocumentBehindTheToken(t *testing.T) {
+	// The console builds its forms from the document, so it must be there for an administrator
+	// even where the public copy is switched off.
+	h := newHarnessWith(t, func(c *Config) { c.Docs = false })
+
+	if status, _ := h.raw(t, "GET", "/api/openapi.json", nil, ""); status == http.StatusOK {
+		t.Errorf("the public document is served with docs off")
+	}
+	if status, _ := h.raw(t, "GET", "/api/v1/openapi.json", nil, ""); status != http.StatusUnauthorized {
+		t.Errorf("the document behind the token answered an anonymous caller: status = %d", status)
+	}
+
+	status, raw := h.raw(t, "GET", "/api/v1/openapi.json", nil, testToken)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Components.Schemas) == 0 {
+		t.Errorf("the document carries no schemas to build forms from: %v", err)
+	}
+}
+
 func TestTheGeneratedDocumentDescribesEveryRoute(t *testing.T) {
 	h := newHarness(t)
 

@@ -6,6 +6,10 @@ import react from '@vitejs/plugin-react'
 // locally, so the page can be worked on against a real directory.
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    // rjsf's ajv validator is never used: see src/no-ajv.ts.
+    alias: { '@rjsf/validator-ajv8': '/src/no-ajv.ts' },
+  },
   base: '/ui/',
   build: {
     outDir: '../internal/api/ui/dist',

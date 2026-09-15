@@ -10,10 +10,10 @@ import (
 )
 
 type createTrustRequest struct {
-	RemoteRealm string               `json:"remoteRealm" required:"true" example:"PARTNER.COM"`
-	Direction   store.TrustDirection `json:"direction"`
-	Transitive  *bool                `json:"transitive,omitempty" description:"Allow this realm to be a waypoint towards realms beyond the remote one."`
-	Enabled     *bool                `json:"enabled,omitempty"`
+	RemoteRealm string `json:"remoteRealm" required:"true" example:"PARTNER.COM"`
+	Direction   string `json:"direction" enum:"outbound,inbound,bidirectional" default:"bidirectional"`
+	Transitive  *bool  `json:"transitive,omitempty" description:"Allow this realm to be a waypoint towards realms beyond the remote one." default:"true"`
+	Enabled     *bool  `json:"enabled,omitempty" default:"true"`
 	// Password is the secret shared with the remote realm. Both realms must derive the
 	// cross-realm keys from the same string, so it is supplied rather than generated.
 	Password string `json:"password" required:"true" format:"password"`
@@ -75,7 +75,7 @@ func (s *Server) handleCreateTrust(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	direction := req.Direction
+	direction := store.TrustDirection(req.Direction)
 	if len(direction) == 0 {
 		direction = store.TrustBidirectional
 	}

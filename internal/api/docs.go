@@ -140,3 +140,14 @@ func assetContentType(name string) string {
 		return "application/octet-stream"
 	}
 }
+
+// handleSchema serves the OpenAPI document to an authenticated caller.
+//
+// The console builds its forms from it — the fields, their types, which are required and what they
+// mean — so the forms cannot describe an API other than the one they talk to. It is a route of its
+// own, behind the token, because a deployment that turns api.docs off to keep the public copy away
+// from a widely reachable port still has administrators who need the console.
+func (s *Server) handleSchema(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(s.spec)
+}

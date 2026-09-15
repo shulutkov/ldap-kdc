@@ -13,7 +13,11 @@ import {
   enc,
   signInWithKerberos,
   signInWithPassword,
+  loadSpec,
+  requestSchema,
 } from './api'
+import type { RJSFSchema, UiSchema } from '@rjsf/utils'
+import { SchemaForm, changedFields, fieldsOf, uiSchemaFor, withoutEmpty } from './schemaform'
 
 // The console for the people who administer this directory. It is a view over the management API
 // and nothing more: every change it makes is one request, made as the administrator who signed in
@@ -47,8 +51,13 @@ type Resource = {
   // load reads one object, and the fields its editor starts from.
   load?: (key: string, token: string) => Promise<Item>
   itemPath: (key: string) => string
-  patchable?: string[]
-  template: Item
+  // patchPath is the operation an edit is sent to, as the OpenAPI document names it; none means the
+  // object is not edited in place.
+  patchPath?: string
+  // order puts the fields a person looks for first at the top; the rest follow in the schema's order.
+  order?: string[]
+  // ui is the handful of per-field choices the schema cannot express.
+  ui?: UiSchema
 }
 
 const principalKey = (v: Item) => `${str(v.name)}@${str(v.realm)}`
@@ -67,9 +76,10 @@ const RESOURCES: Record<Kind, Resource> = {
     ],
     key: (v) => str(v.name),
     itemPath: (k) => `/api/v1/users/${encodeURIComponent(k)}`,
+    patchPath: '/api/v1/users/{name}',
+    order: ['name', 'givenName', 'sn', 'mail', 'password', 'forceChange', 'primaryGroup', 'otherGroups', 'uidNumber', 'disabled', 'loginShell', 'homeDirectory', 'aliases', 'sshKeys', 'capabilities', 'customAttributes', 'otpSecret'],
+    ui: { otpSecret: { 'ui:widget': 'password' } },
     load: async (k, token) => (await api<{ user: Item }>(`/api/v1/users/${encodeURIComponent(k)}`, token)).user,
-    patchable: ['uidNumber', 'primaryGroup', 'otherGroups', 'givenName', 'sn', 'mail', 'loginShell', 'homeDirectory', 'disabled', 'sshKeys', 'customAttributes', 'capabilities'],
-    template: { name: 'alice', primaryGroup: 5000, givenName: 'Alice', sn: 'Example', mail: 'alice@example.com', password: '', forceChange: true, aliases: [] },
   },
   groups: {
     title: 'Groups',
@@ -83,9 +93,9 @@ const RESOURCES: Record<Kind, Resource> = {
     ],
     key: (v) => str(v.name),
     itemPath: (k) => `/api/v1/groups/${encodeURIComponent(k)}`,
+    patchPath: '/api/v1/groups/{name}',
+    order: ['name', 'gidNumber', 'description', 'includeGroups', 'capabilities', 'customAttributes'],
     load: async (k, token) => (await api<{ group: Item }>(`/api/v1/groups/${encodeURIComponent(k)}`, token)).group,
-    patchable: ['name', 'gidNumber', 'description', 'includeGroups', 'capabilities', 'customAttributes'],
-    template: { name: 'staff', description: '', capabilities: [] },
   },
   principals: {
     title: 'Principals',
@@ -100,12 +110,14 @@ const RESOURCES: Record<Kind, Resource> = {
     ],
     key: principalKey,
     itemPath: (k) => `/api/v1/principals/${enc(k)}`,
+    patchPath: '/api/v1/principals/{name}',
+    order: ['name', 'userName', 'password', 'enabled', 'requiresPreAuth', 'allowForwardable', 'allowProxiable', 'allowRenewable', 'allowPostdate', 'okAsDelegate', 'okToAuthAsDelegate', 'maxTicketLife', 'maxRenewableLife', 'expiresAt', 'passwordExpiresAt', 'aliases', 'allowedToDelegateTo', 'allowedToImpersonate'],
+    // Unlocking is its own button beside the form, not a box to tick and save.
+    ui: { unlock: { 'ui:widget': 'hidden' } },
     load: async (k, token) => {
       const body = await api<{ principal: Item; maxTicketLife?: string; maxRenewableLife?: string }>(`/api/v1/principals/${enc(k)}`, token)
       return { ...body.principal, maxTicketLife: body.maxTicketLife ?? '', maxRenewableLife: body.maxRenewableLife ?? '' }
     },
-    patchable: ['enabled', 'requiresPreAuth', 'allowForwardable', 'allowProxiable', 'allowRenewable', 'allowPostdate', 'okAsDelegate', 'okToAuthAsDelegate', 'aliases', 'allowedToDelegateTo', 'allowedToImpersonate', 'maxTicketLife', 'maxRenewableLife', 'expiresAt'],
-    template: { name: 'HTTP/www.example.com', okAsDelegate: false },
   },
   dns: {
     title: 'DNS records',
@@ -114,7 +126,7 @@ const RESOURCES: Record<Kind, Resource> = {
     cells: (v) => [<code>{str(v.name)}</code>, str(v.type), <code>{str(v.value)}</code>, str(v.ttl)],
     key: (v) => str(v.id),
     itemPath: (k) => `/api/v1/dns/records/${encodeURIComponent(k)}`,
-    template: { name: 'www.example.com', type: 'A', value: '192.0.2.10' },
+    order: ['name', 'type', 'value', 'ttl'],
   },
   trusts: {
     title: 'Trusts',
@@ -128,9 +140,9 @@ const RESOURCES: Record<Kind, Resource> = {
     ],
     key: (v) => str(v.remoteRealm),
     itemPath: (k) => `/api/v1/trusts/${encodeURIComponent(k)}`,
+    patchPath: '/api/v1/trusts/{realm}',
+    order: ['remoteRealm', 'direction', 'transitive', 'enabled', 'password'],
     load: async (k, token) => (await api<{ trust: Item }>(`/api/v1/trusts/${encodeURIComponent(k)}`, token)).trust,
-    patchable: ['direction', 'transitive', 'enabled'],
-    template: { remoteRealm: 'PARTNER.COM', direction: 'bidirectional', transitive: false, password: '' },
   },
 }
 
@@ -464,7 +476,6 @@ function List({ kind, token, onFailure }: { kind: Kind; token: string; onFailure
   )
 }
 
-const pick = (v: Item, fields: string[]): Item => Object.fromEntries(fields.filter((f) => f in v).map((f) => [f, v[f]]))
 
 function Editor({
   kind,
@@ -482,37 +493,42 @@ function Editor({
   const res = RESOURCES[kind]
   const creating = itemKey === undefined
   const [item, setItem] = useState<Item | null>(creating ? {} : null)
-  const [text, setText] = useState(() => (creating ? JSON.stringify(res.template, null, 2) : ''))
+  const [schema, setSchema] = useState<RJSFSchema | null>(null)
+  const [initial, setInitial] = useState<Item>({})
+  const [data, setData] = useState<Item>({})
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (creating) return
-    const load = res.load
-      ? res.load(itemKey!, token)
-      : listOf(kind, token).then((all) => {
-          const found = all.find((v) => res.key(v) === itemKey)
-          if (!found) throw new ApiError(404, 'no such object')
-          return found
-        })
-    load
-      .then((v) => {
+    let cancelled = false
+    const load = creating
+      ? Promise.resolve({})
+      : res.load
+        ? res.load(itemKey!, token)
+        : listOf(kind, token).then((all) => {
+            const found = all.find((v) => res.key(v) === itemKey)
+            if (!found) throw new ApiError(404, 'no such object')
+            return found
+          })
+    Promise.all([loadSpec(token), load])
+      .then(([spec, v]) => {
+        if (cancelled) return
+        const path = creating ? res.collection : res.patchPath
+        const body = path ? (requestSchema(spec, creating ? 'post' : 'patch', path) as RJSFSchema | null) : null
         setItem(v)
-        setText(JSON.stringify(res.patchable ? pick(v, res.patchable) : v, null, 2))
+        setSchema(body)
+        const start = body ? fieldsOf(v, body) : {}
+        setInitial(start)
+        setData(start)
       })
       .catch(onFailure)
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, itemKey, token])
 
-  const parsed = useMemo((): { value?: Item; error?: string } => {
-    try {
-      const v = JSON.parse(text) as unknown
-      if (v === null || typeof v !== 'object' || Array.isArray(v)) return { error: 'One JSON object, please.' }
-      return { value: v as Item }
-    } catch (e) {
-      return { error: 'Not valid JSON: ' + (e as Error).message }
-    }
-  }, [text])
+  const uiSchema = useMemo(() => (schema ? uiSchemaFor(schema, res.order, res.ui) : {}), [schema, res])
 
   const run = async (what: () => Promise<void>) => {
     setBusy(true)
@@ -527,16 +543,20 @@ function Editor({
     }
   }
 
-  const save = () =>
+  const save = (current: Item) =>
     run(async () => {
-      if (!parsed.value) throw new Error(parsed.error)
       if (creating) {
-        await api(res.collection, token, { method: 'POST', body: JSON.stringify(parsed.value) })
+        await api(res.collection, token, { method: 'POST', body: JSON.stringify(withoutEmpty(current)) })
         onDone('Created.')
-      } else {
-        await api(res.itemPath(itemKey!), token, { method: 'PATCH', body: JSON.stringify(parsed.value) })
-        onDone(`Saved ${itemKey}.`)
+        return
       }
+      const changes = changedFields(initial, current, schema!)
+      if (Object.keys(changes).length === 0) {
+        setErr('Nothing has changed.')
+        return
+      }
+      await api(res.itemPath(itemKey!), token, { method: 'PATCH', body: JSON.stringify(changes) })
+      onDone(`Saved ${itemKey}.`)
     })
 
   const remove = () =>
@@ -552,7 +572,7 @@ function Editor({
     </h1>
   )
 
-  if (!creating && item === null) {
+  if (item === null || (schema === null && (creating || res.patchPath))) {
     return (
       <>
         {title}
@@ -564,27 +584,32 @@ function Editor({
   return (
     <>
       {title}
-      {!creating && item && <Facts kind={kind} item={item} />}
-      {(creating || res.patchable) && (
-        <>
-          <h2>{creating ? 'New object' : 'Editable fields'}</h2>
-          <textarea className="json" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} />
-        </>
+      {!creating && <Facts kind={kind} item={item} />}
+      {schema && (
+        <div className="panel">
+          <div className="panel-head">
+            <span className="panel-title">{creating ? 'New' : 'Settings'}</span>
+          </div>
+          <div className="panel-body">
+            <SchemaForm schema={schema} uiSchema={uiSchema} formData={data} disabled={busy} onChange={setData} onSubmit={save}>
+              <div className="actions">
+                <button type="submit" disabled={busy}>
+                  {creating ? 'Create' : 'Save'}
+                </button>
+                <span className="hint">{creating ? 'Fields left blank take the service’s defaults.' : 'Only what you change is sent.'}</span>
+              </div>
+            </SchemaForm>
+          </div>
+        </div>
       )}
-      <div className="actions">
-        {(creating || res.patchable) && (
-          <button disabled={busy || !parsed.value} onClick={save}>
-            {creating ? 'Create' : 'Save'}
-          </button>
-        )}
-        {!creating && (
-          <button className="danger" disabled={busy} onClick={remove}>
+      {!creating && (
+        <div className="actions">
+          <Actions kind={kind} itemKey={itemKey!} item={item} token={token} run={run} onDone={onDone} />
+          <button type="button" className="danger" disabled={busy} onClick={remove}>
             Delete
           </button>
-        )}
-        {!creating && item && <Actions kind={kind} itemKey={itemKey!} item={item} token={token} run={run} onDone={onDone} />}
-        <span className="hint">{parsed.error ?? (creating ? 'Fields left out take their defaults.' : 'Only the fields present are changed.')}</span>
-      </div>
+        </div>
+      )}
       {err && <div className="notice bad">{err}</div>}
     </>
   )

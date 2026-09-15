@@ -13,12 +13,15 @@ h1 a { color: var(--ink); }
 /* A tile's value on the overview: the count, or the realm, one step larger than its label. */
 .tile .v { font-size: 16px; word-break: break-all; }
 
-/* The object editor is a JSON document, not a comment box. */
-textarea.json { min-height: 280px; }
-
 /* An error under a form keeps its distance from the actions above it. */
 form + .notice { margin-top: 12px; }
 
 /* A credential that is missing is a warning, not a failure: the catalog paints .running and
    .testing in the warn colour, and the console's "none"/"locked" badge is the same thing. */
 .badge.warn { color: #fff; background: var(--warn); border-color: var(--warn); }
+
+/* A form built from the API's schema. The catalog's .field, .form-col and .form-row carry it; these
+   close the two gaps rjsf's markup leaves — a field inside a grid that already spaces it, and a
+   checkbox whose box and label belong on one line. */
+.form-col .field { margin-bottom: 0; }
+.checkbox label { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 13px; }

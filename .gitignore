@@ -18,6 +18,7 @@ ldap-kdc.yaml
 
 # The console's dependencies; its built bundle under internal/api/ui/dist is committed
 ui/node_modules/
+internal/api/ui/dist/
 
 # Editors
 .idea/

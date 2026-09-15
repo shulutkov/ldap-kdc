@@ -205,6 +205,13 @@ func (s *Server) apiRoutes() []route {
 			responses: []responseDoc{ok(new(whoAmIBody), "The subject and how it authenticated."), unauthorized},
 		}}},
 
+		{"GET /api/v1/openapi.json", s.handleSchema, []operationDoc{{
+			tag: "operations", summary: "This document, for an authenticated caller",
+			description: "The same document as /api/openapi.json, served behind the token so the console " +
+				"can build its forms from it even where api.docs keeps the public copy off.",
+			responses: []responseDoc{ok(new(map[string]any), "The OpenAPI document."), unauthorized},
+		}}},
+
 		{"GET /api/v1/stats", s.handleStats, []operationDoc{{
 			tag: "operations", summary: "What the directory holds",
 			responses: []responseDoc{ok(new(statsBody), "Counts and the realm's enctypes."), unauthorized},
