@@ -201,6 +201,18 @@ curl -s -X POST $API/principals -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s $API/principals/HTTP/www.example.com/keytab -H "$AUTH" -o http.keytab
 ```
 
+A service principal may also act as an account: link it, and a SASL GSSAPI bind under that
+principal binds as the account, with the account's capabilities. The link is settable at any time,
+because a machine's principal usually exists long before the account it acts as:
+
+```sh
+curl -s -X PATCH $API/principals/HTTP/www.example.com -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"userName": "reporter"}'
+```
+
+Sending an empty name unlinks it, and a principal linked to nothing authenticates but binds as
+nobody -- the authorization a bind establishes belongs to an account.
+
 ### A service account with an OIDC token
 
 A machine that speaks OIDC rather than Kerberos asks in its own name. Set

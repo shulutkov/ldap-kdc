@@ -277,6 +277,16 @@ func keyContext(principalID int64, kvno int, etype int32) string {
 }
 
 // nullTime converts an optional time into a nullable SQL integer.
+// nullInt64 stores a pointer as an integer or as NULL, so a link that is absent is stored as no
+// link rather than as a zero that means something else.
+func nullInt64(v *int64) any {
+	if v == nil {
+		return nil
+	}
+
+	return *v
+}
+
 func nullTime(t *time.Time) any {
 	if t == nil || t.IsZero() {
 		return nil

@@ -890,3 +890,86 @@ func TestAGroupCanBeRenamedThroughTheAPI(t *testing.T) {
 		t.Errorf("rename to nothing: status = %d, want 400", status)
 	}
 }
+
+// TestAPrincipalIsLinkedToAnAccountAfterItExists: a machine's principal is usually created long
+// before the account it acts as, and until this the link could be set only at creation. Adding it
+// afterwards meant re-creating the principal, which issues a new key and breaks every keytab
+// already distributed under the old one.
+//
+// The assertion that matters reads the principal back FROM THE STORE. UpdatePrincipal hands the
+// caller the struct it mutated in memory, so a test believing the response would pass while the
+// UPDATE quietly left user_id behind — which is exactly what it did.
+func TestAPrincipalIsLinkedToAnAccountAfterItExists(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	if status, body := h.do(t, "POST", "/api/v1/groups", map[string]any{
+		"name": "staff", "gidNumber": 5000,
+	}); status != http.StatusCreated {
+		t.Fatalf("creating the group: status = %d, body = %v", status, body)
+	}
+	if status, body := h.do(t, "POST", "/api/v1/users", map[string]any{
+		"name": "reporter", "primaryGroup": 5000,
+	}); status != http.StatusCreated {
+		t.Fatalf("creating the account: status = %d, body = %v", status, body)
+	}
+	// Created on its own, naming no account — the state every machine principal starts in.
+	if status, body := h.do(t, "POST", "/api/v1/principals", map[string]any{
+		"name": "HTTP/www.example.com",
+	}); status != http.StatusCreated {
+		t.Fatalf("creating the principal: status = %d, body = %v", status, body)
+	}
+
+	name := krbkeys.MustParseName("HTTP/www.example.com", testRealm)
+
+	p, err := h.store.GetPrincipal(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.UserID != nil {
+		t.Fatalf("a principal created without an account is linked to %v", *p.UserID)
+	}
+
+	if status, body := h.do(t, "PATCH", "/api/v1/principals/HTTP/www.example.com", map[string]any{
+		"userName": "reporter",
+	}); status != http.StatusOK {
+		t.Fatalf("linking: status = %d, body = %v", status, body)
+	}
+
+	if p, err = h.store.GetPrincipal(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if p.UserID == nil {
+		t.Fatal("the link was accepted and not stored")
+	}
+	if p.UserName != "reporter" {
+		t.Errorf("the principal reads back as %q, want reporter", p.UserName)
+	}
+
+	// An empty name unlinks it, the way an empty list of aliases removes them.
+	if status, body := h.do(t, "PATCH", "/api/v1/principals/HTTP/www.example.com", map[string]any{
+		"userName": "",
+	}); status != http.StatusOK {
+		t.Fatalf("unlinking: status = %d, body = %v", status, body)
+	}
+
+	if p, err = h.store.GetPrincipal(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if p.UserID != nil {
+		t.Errorf("the principal is still linked to %v", *p.UserID)
+	}
+
+	// A name nobody answers to is refused as a bad request, naming the field at fault: a link
+	// silently dropped would read as a directory that authenticates the machine and grants it
+	// nothing, which is the hardest failure of this kind to trace.
+	status, body := h.do(t, "PATCH", "/api/v1/principals/HTTP/www.example.com", map[string]any{
+		"userName": "nobody",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("linking to nobody: status = %d, body = %v", status, body)
+	}
+	if msg, _ := body["error"].(string); len(msg) == 0 {
+		t.Errorf("the refusal carries no message: %v", body)
+	}
+}

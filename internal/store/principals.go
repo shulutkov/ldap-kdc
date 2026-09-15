@@ -285,13 +285,13 @@ func (s *Store) UpdatePrincipal(ctx context.Context, name krbkeys.Name, mutate f
 			       allow_proxiable = ?, allow_renewable = ?, allow_postdate = ?,
 			       ok_as_delegate = ?, ok_to_auth_as_delegate = ?, max_ticket_life = ?,
 			       max_renewable_life = ?, password_expires_at = ?, expires_at = ?,
-			       locked_until = ?, fail_count = ?, updated_at = ?
+			       locked_until = ?, fail_count = ?, updated_at = ?, user_id = ?
 			WHERE id = ?`,
 			p.Enabled, p.RequiresPreAuth, p.AllowForwardable, p.AllowProxiable,
 			p.AllowRenewable, p.AllowPostdate, p.OKAsDelegate, p.OKToAuthAsDelegate,
 			int64(p.MaxTicketLife/time.Second), int64(p.MaxRenewableLife/time.Second),
 			nullTime(p.PasswordExpiresAt), nullTime(p.ExpiresAt), nullTime(p.LockedUntil),
-			p.FailCount, now.Unix(), p.ID,
+			p.FailCount, now.Unix(), nullInt64(p.UserID), p.ID,
 		); err != nil {
 			return err
 		}

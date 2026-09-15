@@ -42,6 +42,13 @@ type createPrincipalRequest struct {
 }
 
 type patchPrincipalRequest struct {
+	// UserName links the principal to a directory account, or unlinks it when empty.
+	//
+	// Settable here and not only at creation, because a machine principal usually exists before
+	// the account it acts as: re-creating it to add the link would issue a new key, and every
+	// keytab already distributed under the old one would stop working.
+	UserName *string `json:"userName,omitempty"`
+
 	Enabled         *bool `json:"enabled,omitempty"`
 	RequiresPreAuth *bool `json:"requiresPreAuth,omitempty"`
 
@@ -227,9 +234,24 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var badField, badValue string
+	var badField, badValue, badAccount string
 
 	updated, err := s.st.UpdatePrincipal(r.Context(), name, func(p *store.Principal) error {
+		if req.UserName != nil {
+			if len(*req.UserName) == 0 {
+				p.UserID = nil
+			} else {
+				u, err := s.st.GetUser(r.Context(), *req.UserName)
+				if err != nil {
+					badAccount = *req.UserName
+
+					return err
+				}
+
+				p.UserID = &u.ID
+			}
+		}
+
 		applyIf(req.Enabled, &p.Enabled)
 		applyIf(req.RequiresPreAuth, &p.RequiresPreAuth)
 		applyIf(req.AllowForwardable, &p.AllowForwardable)
@@ -277,6 +299,12 @@ func (s *Server) handlePatchPrincipal(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
+		if len(badAccount) > 0 {
+			writeError(w, http.StatusBadRequest, "userName: %q names no account in this directory", badAccount)
+
+			return
+		}
+
 		if len(badField) > 0 {
 			writeError(w, http.StatusBadRequest, "%s: %q is not a duration", badField, badValue)
 
