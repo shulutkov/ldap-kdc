@@ -31,6 +31,11 @@ server:
   name_format: cn
   group_format: ou
 
+  # The service principal a SASL GSSAPI bind is accepted for. Empty turns SASL off and the root
+  # DSE offers no mechanisms. A client that holds a Kerberos ticket then has no way in but a
+  # password, which is the thing this setting exists to remove.
+  # ldap_spn: ldap/dc.example.com
+
   # Attribute names SSH keys are published under — the same keys under each. OpenSSH-LPK's
   # sshPublicKey and FreeIPA's ipaSshPubKey are the two names readers know; a search on either
   # finds the account. The older singular `ssh_key_attr`, if set, is the whole list.

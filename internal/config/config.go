@@ -45,6 +45,15 @@ type Server struct {
 	// start and persisted in the store when left empty.
 	DomainSID string `yaml:"domain_sid" env:"DOMAIN_SID"`
 
+	// LDAPSPN is the service principal a SASL GSSAPI bind is accepted for, e.g.
+	// "ldap/dc.example.com". It belongs to the directory rather than to a listener: the plain and
+	// the TLS ports serve the same directory and answer for the same name.
+	//
+	// Empty turns SASL off, and the root DSE then offers no mechanisms — which is what a client
+	// reads before it tries. The principal is created on first start if the realm has none, the
+	// same way the console's sign-in principal is.
+	LDAPSPN string `yaml:"ldap_spn" env:"LDAP_SPN"`
+
 	// NetBIOSName names the domain in the PAC's logon domain field. Derived from the first
 	// label of Realm when left empty.
 	NetBIOSName string `yaml:"netbios_name" env:"NETBIOS_NAME"`

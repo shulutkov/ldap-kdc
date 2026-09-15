@@ -68,6 +68,12 @@ func New(cfg Config, plain, secure ListenerConfig, st *store.Store, log zerolog.
 
 // Start binds the enabled listeners and serves in the background.
 func (s *Server) Start(ctx context.Context) error {
+	// Before either listener answers: the key a SASL bind is checked against has to exist, and a
+	// misspelled principal has to fail here rather than on every bind.
+	if err := s.handler.EnsureServicePrincipal(ctx); err != nil {
+		return err
+	}
+
 	if s.ldap.Enabled {
 		ln, err := net.Listen("tcp", s.ldap.Listen)
 		if err != nil {

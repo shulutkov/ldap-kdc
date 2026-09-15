@@ -39,6 +39,11 @@ type Config struct {
 	// EncTypes is used when a password is set through LDAP, so the Kerberos keys move with it.
 	EncTypes []int32
 
+	// SPN is the service principal a SASL GSSAPI bind is accepted for, e.g. ldap/dc.example.com.
+	// Empty turns SASL off: no mechanism is offered in the root DSE and a bind that names one is
+	// refused.
+	SPN string
+
 	// Limiter throttles failed binds by source. It is shared with every other door that takes a
 	// password, so a guesser blocked here cannot carry on at the API's sign-in; when it is nil, one
 	// is built from the fields below for this front end alone.

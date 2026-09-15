@@ -510,6 +510,7 @@ func startLDAP(
 			SSHKeyAttrs:           cfg.Server.SSHKeyAttrs,
 			Realm:                 cfg.Server.Realm,
 			DomainSID:             domainSID,
+			SPN:                   cfg.Server.LDAPSPN,
 			AnonymousDSE:          cfg.Server.AnonymousDSE,
 			IgnoreCapabilities:    cfg.Behaviors.IgnoreCapabilities,
 			EncTypes:              encTypes,

@@ -54,13 +54,24 @@ master key held in a separate file. A stolen database is not, by itself, a stole
 
 ## What it speaks
 
-**LDAP / LDAPS** — bind (with TOTP and application passwords), search, modify, delete. StartTLS on
-the plain port. The DN layout follows glauth's, so existing client configuration keeps working:
+**LDAP / LDAPS** — bind (with TOTP and application passwords, or with a Kerberos ticket over SASL
+GSSAPI), search, modify, delete. StartTLS on the plain port. The DN layout follows glauth's, so existing client configuration keeps working:
 
 ```
 cn=alice,ou=staff,ou=users,dc=example,dc=com     a user, under its primary group
 ou=staff,ou=groups,dc=example,dc=com             a group
 ```
+
+A client that already holds a ticket binds with it: set `server.ldap_spn` to the name the directory
+is reached by, `ldap/dc.example.com`, and the root DSE starts offering `GSSAPI`. The key that ticket
+is checked against is a row in this store like any other, because this service is also the KDC that
+issued it — there is no keytab file to write, distribute or rotate, and the principal is created on
+first start if the realm has none.
+
+Only the "no security layer" option is offered: SASL protection of the messages would duplicate what
+StartTLS and LDAPS already do, and Active Directory refuses that combination outright. A service
+principal binds as the account it is linked to, and one linked to no account authenticates but binds
+as nobody — the authorization a bind establishes belongs to an account.
 
 **Kerberos (KDC)** — AS and TGS exchanges over TCP and UDP with:
 
@@ -439,9 +450,10 @@ principal that was never created and the exchange fails with `KDC_ERR_S_PRINCIPA
 Explicit principal names, as `kgetcred HTTP/www.example.com` uses, are unaffected, which is why the
 failure tends to appear only once a real application is involved.
 
-The LDAP port here is not one of those destinations. Binds are simple binds and no SASL mechanism is
-offered, so `ldapsearch -Y GSSAPI` against this service fails at the bind rather than at the ticket.
-A ticket obtained from this realm is for a service somewhere else.
+The LDAP port here is one of those destinations once `server.ldap_spn` is set: `ldapsearch -Y GSSAPI`
+asks the KDC for `ldap/<host>` built from whatever the canonicalisation produced, so the forward and
+reverse zones decide which principal it requests. Left unset, the port offers no mechanism at all
+and such a bind fails before any ticket is fetched.
 
 If you run this service without its name server, or point clients at a DNS server whose reverse
 zone you do not control, turn the canonicalisation off on the client:
@@ -623,10 +635,11 @@ readable over LDAP, and changing one goes through modify, `kpasswd` or the REST 
 **Binding.** AD accepts a UPN or `DOMAIN\user` as a simple bind name. Here a bind name is a DN under
 the base, or an address-shaped string -- and that string is matched against `mail`, not against
 `userPrincipalName`. So `alice@EXAMPLE.COM` binds only when it is also the account's mail address:
-the UPN is a name to search BY, not one to bind AS. There is no SASL either: the root DSE answers an
-empty `supportedSASLMechanisms`, so there is no GSSAPI bind, no NTLM, and no LDAP signing or
-sealing. LDAPS or StartTLS is what protects a bind, and over an untrusted network it is not
-optional.
+the UPN is a name to search BY, not one to bind AS. SASL is one mechanism rather than none: with `server.ldap_spn`
+set the root DSE offers `GSSAPI` and a client binds with a ticket, and left unset it offers an empty
+`supportedSASLMechanisms`. NTLM there is not, and neither is LDAP signing or sealing -- only the
+"no security layer" option is offered. LDAPS or StartTLS is what protects a bind, and over an
+untrusted network it is not optional.
 
 **The tree.** The layout is glauth's -- `cn=alice,ou=staff,ou=users,$BASE` -- and not
 `CN=Alice,CN=Users,DC=example,DC=com`. The root DSE answers `defaultNamingContext`, which is what an

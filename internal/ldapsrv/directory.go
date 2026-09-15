@@ -397,6 +397,17 @@ func (b *entryBuilder) groupDNs(gids []int) []string {
 	return out
 }
 
+// saslMechanisms is what a client reads before it decides how to bind. A directory with no service
+// principal offers none, which is the honest answer: the mechanism would be advertised and then
+// refuse every bind.
+func (b *entryBuilder) saslMechanisms() []string {
+	if len(b.cfg.SPN) == 0 {
+		return []string{}
+	}
+
+	return []string{saslMechanism}
+}
+
 // rootDSE describes the server to a client that has not bound yet.
 func (b *entryBuilder) rootDSE(dn string) *ldap.Entry {
 	return &ldap.Entry{DN: dn, Attributes: []*ldap.EntryAttribute{
@@ -404,7 +415,7 @@ func (b *entryBuilder) rootDSE(dn string) *ldap.Entry {
 		// attribute has to be present or the entry is filtered out of its own reply.
 		{Name: "objectClass", Values: []string{"top", "LDAProotDSE"}},
 		{Name: "supportedLDAPVersion", Values: []string{"3"}},
-		{Name: "supportedSASLMechanisms", Values: []string{}},
+		{Name: "supportedSASLMechanisms", Values: b.saslMechanisms()},
 		{Name: "supportedControl", Values: []string{}},
 		{Name: "supportedCapabilities", Values: []string{}},
 		{Name: "subschemaSubentry", Values: []string{"cn=schema"}},
