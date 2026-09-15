@@ -55,9 +55,16 @@ export function labelFor(key: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-// uiSchemaFor names the top-level fields, puts the ones a person looks for first at the top, and
-// applies a resource's few overrides. Everything else — widgets, placeholders — follows the schema.
-export function uiSchemaFor(schema: RJSFSchema, order: string[] = [], overrides: UiSchema = {}): UiSchema {
+// FieldGroup is one titled section of a form: a heading and the field names under it, in the order
+// they should appear. Naming a field the active schema does not have is not an error — a create and
+// a patch of the same resource often differ by a few fields, and one grouping describes both; the
+// name is simply absent from that form.
+export type FieldGroup = { title: string; fields: string[] }
+
+// uiSchemaFor names the top-level fields, sorts them into the sections `groups` describes (or, with
+// no groups, puts `order`'s fields first), and applies a resource's few widget overrides. Everything
+// else — types, requiredness, placeholders — follows the schema.
+export function uiSchemaFor(schema: RJSFSchema, order: string[] = [], overrides: UiSchema = {}, groups?: FieldGroup[]): UiSchema {
   const props = (schema.properties ?? {}) as Record<string, Schema>
   const ui: UiSchema = {
     'ui:globalOptions': { orderable: false, copyable: false },
@@ -67,9 +74,11 @@ export function uiSchemaFor(schema: RJSFSchema, order: string[] = [], overrides:
     ui[key] = { 'ui:title': labelFor(key), ...((overrides[key] as object | undefined) ?? {}) }
   }
   // rjsf refuses an order that names a field the schema does not have, so the list is cut to the
-  // fields this operation actually takes.
-  const ordered = order.filter((k) => k in props)
+  // fields this operation actually takes. A grouped form is ordered by its groups, field for field.
+  const wanted = groups ? groups.flatMap((g) => g.fields) : order
+  const ordered = wanted.filter((k) => k in props)
   if (ordered.length) ui['ui:order'] = [...ordered, '*']
+  if (groups) ui['ui:groups'] = groups
   return ui
 }
 
@@ -144,23 +153,73 @@ function FieldTemplate(props: FieldTemplateProps) {
   )
 }
 
-function ObjectFieldTemplate({ properties, schema, uiSchema, formData, onAddProperty, disabled, readonly, title, registry }: ObjectFieldTemplateProps) {
+function ObjectFieldTemplate({ properties, schema, uiSchema, formData, onAddProperty, disabled, readonly, title, fieldPathId, registry }: ObjectFieldTemplateProps) {
   const { AddButton } = registry.templates.ButtonTemplates
-  const content = properties.filter((p) => !p.hidden).map((p) => <Fragment key={p.name}>{p.content}</Fragment>)
+  const visible = properties.filter((p) => !p.hidden)
   const isMap = Boolean(schema.additionalProperties) && Object.keys(schema.properties ?? {}).length === 0
-  if (!isMap) return <div className="form-col">{content}</div>
-  // A map — custom attributes — is a list of name and values pairs a person adds to.
+  if (isMap) {
+    // A map — custom attributes — is a list of name and values pairs a person adds to.
+    return (
+      <div className="field">
+        {title && <span className="field-label">{labelFor(title)}</span>}
+        {typeof schema.description === 'string' && <span className="hint">{schema.description}</span>}
+        {visible.length ? visible.map((p) => <Fragment key={p.name}>{p.content}</Fragment>) : <span className="hint">None yet.</span>}
+        {canExpand(schema, uiSchema, formData) && (
+          <div>
+            <AddButton onClick={onAddProperty} disabled={disabled || readonly} registry={registry} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const isRoot = fieldPathId.path.length === 0
+
+  if (!isRoot) {
+    // A nested object — today, an array item's fields, like a capability's action and object — has
+    // no heading of its own and lays out nothing itself: whatever wraps it already does (the array
+    // item's row, in a `.form-row`), and a field-by-field list here would stack side by side what
+    // belongs on one line.
+    return <>{visible.map((p) => <Fragment key={p.name}>{p.content}</Fragment>)}</>
+  }
+
+  // The root object is the operation's whole body, laid out by whichever `ui:groups` it carries.
+  const groups = uiSchema?.['ui:groups'] as FieldGroup[] | undefined
+  if (!groups) return <div className="form-col">{visible.map((p) => <Fragment key={p.name}>{p.content}</Fragment>)}</div>
+
+  // Sorted into the sections the resource named. A field the sections left out still has to be shown
+  // — a schema grows a field before anyone remembers to place it — so it lands in a trailing,
+  // unlabelled section rather than being silently dropped.
+  const byName = new Map(visible.map((p) => [p.name, p]))
+  const claimed = new Set<string>()
+  const sections = groups
+    .map((g) => ({
+      title: g.title,
+      fields: g.fields.map((f) => byName.get(f)).filter((p): p is (typeof visible)[number] => {
+        if (!p) return false
+        claimed.add(p.name)
+        return true
+      }),
+    }))
+    .filter((s) => s.fields.length > 0)
+  const leftover = visible.filter((p) => !claimed.has(p.name))
+  if (leftover.length) sections.push({ title: '', fields: leftover })
+
   return (
-    <div className="field">
-      {title && <span className="field-label">{labelFor(title)}</span>}
-      {typeof schema.description === 'string' && <span className="hint">{schema.description}</span>}
-      {content.length ? content : <span className="hint">None yet.</span>}
-      {canExpand(schema, uiSchema, formData) && (
-        <div>
-          <AddButton onClick={onAddProperty} disabled={disabled || readonly} registry={registry} />
+    <>
+      {sections.map((s, i) => (
+        <div className="panel" key={s.title || i}>
+          {s.title && (
+            <div className="panel-head">
+              <span className="panel-title">{s.title}</span>
+            </div>
+          )}
+          <div className="panel-body">
+            <div className="form-col">{s.fields.map((p) => <Fragment key={p.name}>{p.content}</Fragment>)}</div>
+          </div>
         </div>
-      )}
-    </div>
+      ))}
+    </>
   )
 }
 

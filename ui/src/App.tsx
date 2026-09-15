@@ -17,7 +17,7 @@ import {
   requestSchema,
 } from './api'
 import type { RJSFSchema, UiSchema } from '@rjsf/utils'
-import { SchemaForm, changedFields, fieldsOf, uiSchemaFor, withoutEmpty } from './schemaform'
+import { FieldGroup, SchemaForm, changedFields, fieldsOf, uiSchemaFor, withoutEmpty } from './schemaform'
 
 // The console for the people who administer this directory. It is a view over the management API
 // and nothing more: every change it makes is one request, made as the administrator who signed in
@@ -55,7 +55,11 @@ type Resource = {
   // object is not edited in place.
   patchPath?: string
   // order puts the fields a person looks for first at the top; the rest follow in the schema's order.
+  // Ignored once groups is set — a grouped form is ordered by its groups instead.
   order?: string[]
+  // groups sorts the form into titled sections instead of one flat list, for a resource with enough
+  // fields that "everything in one box" stops being readable.
+  groups?: FieldGroup[]
   // ui is the handful of per-field choices the schema cannot express.
   ui?: UiSchema
 }
@@ -77,7 +81,14 @@ const RESOURCES: Record<Kind, Resource> = {
     key: (v) => str(v.name),
     itemPath: (k) => `/api/v1/users/${encodeURIComponent(k)}`,
     patchPath: '/api/v1/users/{name}',
-    order: ['name', 'givenName', 'sn', 'mail', 'password', 'forceChange', 'primaryGroup', 'otherGroups', 'uidNumber', 'disabled', 'loginShell', 'homeDirectory', 'aliases', 'sshKeys', 'capabilities', 'customAttributes', 'otpSecret'],
+    groups: [
+      { title: 'Identity', fields: ['name', 'givenName', 'sn', 'mail'] },
+      { title: 'Credentials', fields: ['password', 'forceChange', 'otpSecret'] },
+      { title: 'POSIX account', fields: ['primaryGroup', 'otherGroups', 'uidNumber', 'loginShell', 'homeDirectory', 'sshKeys'] },
+      { title: 'Kerberos', fields: ['aliases'] },
+      { title: 'Access control', fields: ['disabled', 'capabilities'] },
+      { title: 'Custom attributes', fields: ['customAttributes'] },
+    ],
     ui: { otpSecret: { 'ui:widget': 'password' } },
     load: async (k, token) => (await api<{ user: Item }>(`/api/v1/users/${encodeURIComponent(k)}`, token)).user,
   },
@@ -94,7 +105,12 @@ const RESOURCES: Record<Kind, Resource> = {
     key: (v) => str(v.name),
     itemPath: (k) => `/api/v1/groups/${encodeURIComponent(k)}`,
     patchPath: '/api/v1/groups/{name}',
-    order: ['name', 'gidNumber', 'description', 'includeGroups', 'capabilities', 'customAttributes'],
+    groups: [
+      { title: 'Identity', fields: ['name', 'gidNumber', 'description'] },
+      { title: 'Membership', fields: ['includeGroups'] },
+      { title: 'Access control', fields: ['capabilities'] },
+      { title: 'Custom attributes', fields: ['customAttributes'] },
+    ],
     load: async (k, token) => (await api<{ group: Item }>(`/api/v1/groups/${encodeURIComponent(k)}`, token)).group,
   },
   principals: {
@@ -111,7 +127,13 @@ const RESOURCES: Record<Kind, Resource> = {
     key: principalKey,
     itemPath: (k) => `/api/v1/principals/${enc(k)}`,
     patchPath: '/api/v1/principals/{name}',
-    order: ['name', 'userName', 'password', 'enabled', 'requiresPreAuth', 'allowForwardable', 'allowProxiable', 'allowRenewable', 'allowPostdate', 'okAsDelegate', 'okToAuthAsDelegate', 'maxTicketLife', 'maxRenewableLife', 'expiresAt', 'passwordExpiresAt', 'aliases', 'allowedToDelegateTo', 'allowedToImpersonate'],
+    groups: [
+      { title: 'Identity', fields: ['name', 'userName', 'aliases'] },
+      { title: 'Credentials', fields: ['password'] },
+      { title: 'Status', fields: ['enabled', 'expiresAt', 'passwordExpiresAt'] },
+      { title: 'Ticket policy', fields: ['requiresPreAuth', 'allowForwardable', 'allowProxiable', 'allowRenewable', 'allowPostdate', 'maxTicketLife', 'maxRenewableLife'] },
+      { title: 'Delegation', fields: ['okAsDelegate', 'okToAuthAsDelegate', 'allowedToDelegateTo', 'allowedToImpersonate'] },
+    ],
     // Unlocking is its own button beside the form, not a box to tick and save.
     ui: { unlock: { 'ui:widget': 'hidden' } },
     load: async (k, token) => {
@@ -141,7 +163,11 @@ const RESOURCES: Record<Kind, Resource> = {
     key: (v) => str(v.remoteRealm),
     itemPath: (k) => `/api/v1/trusts/${encodeURIComponent(k)}`,
     patchPath: '/api/v1/trusts/{realm}',
-    order: ['remoteRealm', 'direction', 'transitive', 'enabled', 'password'],
+    groups: [
+      { title: 'Identity', fields: ['remoteRealm', 'direction'] },
+      { title: 'Policy', fields: ['transitive', 'enabled'] },
+      { title: 'Credentials', fields: ['password'] },
+    ],
     load: async (k, token) => (await api<{ trust: Item }>(`/api/v1/trusts/${encodeURIComponent(k)}`, token)).trust,
   },
 }
@@ -528,7 +554,7 @@ function Editor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, itemKey, token])
 
-  const uiSchema = useMemo(() => (schema ? uiSchemaFor(schema, res.order, res.ui) : {}), [schema, res])
+  const uiSchema = useMemo(() => (schema ? uiSchemaFor(schema, res.order, res.ui, res.groups) : {}), [schema, res])
 
   const run = async (what: () => Promise<void>) => {
     setBusy(true)
@@ -585,12 +611,9 @@ function Editor({
     <>
       {title}
       {!creating && <Facts kind={kind} item={item} />}
-      {schema && (
-        <div className="panel">
-          <div className="panel-head">
-            <span className="panel-title">{creating ? 'New' : 'Settings'}</span>
-          </div>
-          <div className="panel-body">
+      {schema &&
+        (() => {
+          const form = (
             <SchemaForm schema={schema} uiSchema={uiSchema} formData={data} disabled={busy} onChange={setData} onSubmit={save}>
               <div className="actions">
                 <button type="submit" disabled={busy}>
@@ -599,9 +622,19 @@ function Editor({
                 <span className="hint">{creating ? 'Fields left blank take the service’s defaults.' : 'Only what you change is sent.'}</span>
               </div>
             </SchemaForm>
-          </div>
-        </div>
-      )}
+          )
+          // A grouped resource lays out its own titled panels, one per section; an ungrouped one
+          // (a handful of fields, nothing to sort) gets the plain single box it always had.
+          if (res.groups) return form
+          return (
+            <div className="panel">
+              <div className="panel-head">
+                <span className="panel-title">{creating ? 'New' : 'Settings'}</span>
+              </div>
+              <div className="panel-body">{form}</div>
+            </div>
+          )
+        })()}
       {!creating && (
         <div className="actions">
           <Actions kind={kind} itemKey={itemKey!} item={item} token={token} run={run} onDone={onDone} />
