@@ -286,6 +286,8 @@ func run(cfg *config.Config) error {
 			Docs:              cfg.API.Docs,
 			UI:                cfg.API.UI,
 			BaseDN:            cfg.Server.BaseDN,
+			NameFormat:        cfg.Server.NameFormat,
+			GroupFormat:       cfg.Server.GroupFormat,
 			SPN:               cfg.API.SPN,
 			SessionLifetime:   cfg.API.SessionLifetime,
 			Limiter:           limiter,

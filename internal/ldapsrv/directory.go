@@ -27,8 +27,13 @@ type entryBuilder struct {
 
 // UserDN returns the distinguished name of a user, given the name of its primary group.
 func (b *entryBuilder) UserDN(user *store.User, primaryGroup string) string {
-	return fmt.Sprintf("%s=%s,%s=%s,ou=users,%s",
-		b.cfg.NameFormat, user.Name, b.cfg.GroupFormat, primaryGroup, b.cfg.BaseDN)
+	return UserDN(b.cfg.BaseDN, b.cfg.NameFormat, b.cfg.GroupFormat, user.Name, primaryGroup)
+}
+
+// UserDN is the layout itself, for the management API: the DN it shows an administrator has to be
+// the one a client binds with, so there is one place that spells it.
+func UserDN(baseDN, nameFormat, groupFormat, name, primaryGroup string) string {
+	return fmt.Sprintf("%s=%s,%s=%s,ou=users,%s", nameFormat, name, groupFormat, primaryGroup, baseDN)
 }
 
 // GroupDN returns the distinguished name of a group.

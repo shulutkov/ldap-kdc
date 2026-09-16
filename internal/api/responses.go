@@ -48,6 +48,9 @@ type usersBody struct {
 
 type userBody struct {
 	User *store.User `json:"user"`
+	// DN is where the account is found over LDAP. It embeds the primary group, so it moves when
+	// the account's primary group changes or that group is renamed.
+	DN string `json:"dn" example:"cn=alice,ou=staff,ou=users,dc=example,dc=com" description:"The account's distinguished name in the directory, the one a client binds with."`
 	// Principals is present when a single account is read, and lists the Kerberos identities
 	// attached to it.
 	Principals []store.Principal `json:"principals,omitempty"`

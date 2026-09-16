@@ -79,6 +79,7 @@ func newHarnessWith(t *testing.T, adjust func(*Config)) *harness {
 
 	cfg := Config{
 		Listen: "127.0.0.1:0", Realm: testRealm, EncTypes: etypes, BaseDN: testBaseDN,
+		NameFormat: "cn", GroupFormat: "ou",
 		Token: testToken, MinPasswordLength: 8, Docs: true, UI: true,
 	}
 	if adjust != nil {
@@ -888,6 +889,47 @@ func TestAGroupCanBeRenamedThroughTheAPI(t *testing.T) {
 	}
 	if status, _ := h.do(t, "PATCH", "/api/v1/groups/workspace-admin", map[string]any{"name": ""}); status != http.StatusBadRequest {
 		t.Errorf("rename to nothing: status = %d, want 400", status)
+	}
+}
+
+// An account is reported under the DN LDAP publishes it at. That DN embeds the primary group, so the
+// answer has to follow the account to another group, and the group to its new name.
+func TestAUserIsReportedUnderItsDirectoryDN(t *testing.T) {
+	h := newHarness(t)
+
+	for _, g := range []map[string]any{{"name": "masters", "gidNumber": 5000}, {"name": "crew", "gidNumber": 5001}} {
+		if status, body := h.do(t, "POST", "/api/v1/groups", g); status != http.StatusCreated {
+			t.Fatalf("creating %v: status = %d, body = %v", g, status, body)
+		}
+	}
+
+	status, body := h.do(t, "POST", "/api/v1/users", map[string]any{"name": "pirate", "primaryGroup": 5000})
+	if status != http.StatusCreated {
+		t.Fatalf("creating user: status = %d, body = %v", status, body)
+	}
+	if want := "cn=pirate,ou=masters,ou=users," + testBaseDN; body["dn"] != want {
+		t.Errorf("dn on create = %v, want %s", body["dn"], want)
+	}
+
+	if status, body := h.do(t, "GET", "/api/v1/users/pirate", nil); status != http.StatusOK {
+		t.Fatalf("reading user: status = %d, body = %v", status, body)
+	} else if want := "cn=pirate,ou=masters,ou=users," + testBaseDN; body["dn"] != want {
+		t.Errorf("dn on read = %v, want %s", body["dn"], want)
+	}
+
+	if status, body := h.do(t, "PATCH", "/api/v1/users/pirate", map[string]any{"primaryGroup": 5001}); status != http.StatusOK {
+		t.Fatalf("moving user: status = %d, body = %v", status, body)
+	} else if want := "cn=pirate,ou=crew,ou=users," + testBaseDN; body["dn"] != want {
+		t.Errorf("dn after the move = %v, want %s", body["dn"], want)
+	}
+
+	if status, body := h.do(t, "PATCH", "/api/v1/groups/crew", map[string]any{"name": "deckhands"}); status != http.StatusOK {
+		t.Fatalf("renaming group: status = %d, body = %v", status, body)
+	}
+	if status, body := h.do(t, "GET", "/api/v1/users/pirate", nil); status != http.StatusOK {
+		t.Fatalf("reading user: status = %d, body = %v", status, body)
+	} else if want := "cn=pirate,ou=deckhands,ou=users," + testBaseDN; body["dn"] != want {
+		t.Errorf("dn after the rename = %v, want %s", body["dn"], want)
 	}
 }
 

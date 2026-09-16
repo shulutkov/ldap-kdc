@@ -36,6 +36,10 @@ type Config struct {
 	// BaseDN is the directory's naming context. Who may use this API is decided against it: an
 	// administrator is an account that may write all of it.
 	BaseDN string
+	// NameFormat and GroupFormat are the RDN attributes of user and group entries, as the LDAP
+	// front end is configured with them; an account is reported under the DN LDAP gives it.
+	NameFormat  string
+	GroupFormat string
 	// SPN is the service principal Kerberos sign-in is accepted for. Empty turns it off.
 	SPN string
 	// SessionLifetime bounds an administrator's session token.

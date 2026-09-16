@@ -90,7 +90,10 @@ const RESOURCES: Record<Kind, Resource> = {
       { title: 'Custom attributes', fields: ['customAttributes'] },
     ],
     ui: { otpSecret: { 'ui:widget': 'password' } },
-    load: async (k, token) => (await api<{ user: Item }>(`/api/v1/users/${encodeURIComponent(k)}`, token)).user,
+    load: async (k, token) => {
+      const body = await api<{ user: Item; dn: string }>(`/api/v1/users/${encodeURIComponent(k)}`, token)
+      return { ...body.user, dn: body.dn }
+    },
   },
   groups: {
     title: 'Groups',
@@ -652,7 +655,7 @@ function Editor({
 function Facts({ kind, item }: { kind: Kind; item: Item }) {
   const facts: [string, unknown][] =
     kind === 'users'
-      ? [['id', item.id], ['password', item.hasPassword ? 'set' : 'none'], ['one-time code', item.hasOTP ? 'required' : 'not set'], ['created', item.createdAt], ['updated', item.updatedAt]]
+      ? [['id', item.id], ['dn', item.dn], ['password', item.hasPassword ? 'set' : 'none'], ['one-time code', item.hasOTP ? 'required' : 'not set'], ['created', item.createdAt], ['updated', item.updatedAt]]
       : kind === 'principals'
         ? [['kvno', item.kvno], ['account', item.userName || '—'], ['password set', item.passwordLastSet ?? '—'], ['password expires', item.passwordExpiresAt ?? '—'], ['failures', item.failCount], ['locked until', item.lockedUntil ?? '—']]
         : kind === 'groups'

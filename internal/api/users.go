@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
+	"github.com/shulutkov/ldap-kdc/internal/ldapsrv"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 )
 
@@ -106,7 +109,31 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, userBody{User: u, Principals: principals})
+	dn, err := s.userDN(r.Context(), u)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, userBody{User: u, DN: dn, Principals: principals})
+}
+
+// userDN is the DN the LDAP front end publishes the account under. A primary group that no longer
+// resolves is spelled the way LDAP spells it, with an empty name, rather than failing the read: the
+// DN is then exactly as broken as the entry a client would find.
+func (s *Server) userDN(ctx context.Context, u *store.User) (string, error) {
+	var primary string
+
+	g, err := s.st.GetGroupByGID(ctx, u.PrimaryGroup)
+	switch {
+	case err == nil:
+		primary = g.Name
+	case !errors.Is(err, store.ErrNotFound):
+		return "", err
+	}
+
+	return ldapsrv.UserDN(s.cfg.BaseDN, s.cfg.NameFormat, s.cfg.GroupFormat, u.Name, primary), nil
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -154,8 +181,15 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dn, err := s.userDN(ctx, created)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
 	s.log.Info().Str("user", u.Name).Msg("user created")
-	writeJSON(w, http.StatusCreated, userBody{User: created})
+	writeJSON(w, http.StatusCreated, userBody{User: created, DN: dn})
 }
 
 func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
@@ -197,8 +231,15 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dn, err := s.userDN(r.Context(), updated)
+	if err != nil {
+		writeStoreError(w, err)
+
+		return
+	}
+
 	s.log.Info().Str("user", updated.Name).Msg("user updated")
-	writeJSON(w, http.StatusOK, userBody{User: updated})
+	writeJSON(w, http.StatusOK, userBody{User: updated, DN: dn})
 }
 
 // syncPrincipalEnabled mirrors an account's disabled flag onto its principals.
