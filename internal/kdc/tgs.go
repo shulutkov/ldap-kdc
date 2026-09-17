@@ -156,7 +156,15 @@ func (s *Server) authenticateTGS(
 	tgt := apReq.Ticket.DecryptedEncPart
 	client := krbkeys.NameFromPrincipalName(tgt.CName, tgt.CRealm)
 
-	if err := apReq.DecryptAuthenticator(tgt.Key); err != nil {
+	// Key usage 7, the "TGS-REQ PA-TGS-REQ padata AP-REQ Authenticator" of RFC 4120 section
+	// 7.5.1: where the AP-REQ sits decides it, not what its ticket names. APReq.DecryptAuthenticator
+	// reads an application's AP-REQ, usage 11, and once go-krb5 stopped guessing the usage from a
+	// krbtgt ticket name it could no longer open a single TGS-REQ.
+	plain, err := crypto.DecryptEncPart(apReq.EncryptedAuthenticator, tgt.Key, keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR)
+	if err == nil {
+		err = apReq.Authenticator.Unmarshal(plain)
+	}
+	if err != nil {
 		return nil, withClient(krbErrf(errorcode.KRB_AP_ERR_BAD_INTEGRITY,
 			"could not decrypt the authenticator", err), client)
 	}

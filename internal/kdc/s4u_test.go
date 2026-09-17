@@ -7,9 +7,11 @@ import (
 
 	"github.com/go-krb5/krb5/client"
 	"github.com/go-krb5/krb5/crypto"
+	"github.com/go-krb5/krb5/iana"
 	"github.com/go-krb5/krb5/iana/chksumtype"
 	"github.com/go-krb5/krb5/iana/flags"
 	"github.com/go-krb5/krb5/iana/keyusage"
+	"github.com/go-krb5/krb5/iana/msgtype"
 	"github.com/go-krb5/krb5/iana/nametype"
 	"github.com/go-krb5/krb5/iana/patype"
 	"github.com/go-krb5/krb5/messages"
@@ -121,9 +123,24 @@ func tgsRequest(
 	}
 	auth.Cksum = types.Checksum{CksumType: et.GetHashID(), Checksum: cksum}
 
-	apReq, err := messages.NewAPReq(tgt, sessionKey, auth)
+	// Sealed under key usage 7, as a PA-TGS-REQ authenticator is (RFC 4120 section 7.5.1).
+	// messages.NewAPReq seals an application's AP-REQ, usage 11, which no KDC opens here.
+	ab, err := auth.Marshal()
 	if err != nil {
-		t.Fatalf("AP-REQ: %v", err)
+		t.Fatalf("marshalling the authenticator: %v", err)
+	}
+
+	sealed, err := crypto.GetEncryptedData(ab, sessionKey, keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR, tgt.EncPart.KVNO)
+	if err != nil {
+		t.Fatalf("sealing the authenticator: %v", err)
+	}
+
+	apReq := messages.APReq{
+		PVNO:                   iana.PVNO,
+		MsgType:                msgtype.KRB_AP_REQ,
+		APOptions:              types.NewKrbFlags(),
+		Ticket:                 tgt,
+		EncryptedAuthenticator: sealed,
 	}
 
 	apb, err := apReq.Marshal()
