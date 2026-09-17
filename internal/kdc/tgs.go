@@ -390,11 +390,16 @@ func (s *Server) s4u2Self(
 	// that identity internally just as well, which is why MIT and Active Directory let any
 	// service ask. What the OK_TO_AUTH_AS_DELEGATE flag governs is whether the result is
 	// forwardable, because only a forwardable ticket can go on to be delegated to a third
-	// service.
+	// service — so the flag DECIDES it, in both directions, whatever the request asked for.
+	forwardable := forwardableNever
+	if requester.OKToAuthAsDelegate {
+		forwardable = forwardableUnlessBarred
+	}
+
 	s.log.Info().
 		Str("service", auth.Client.String()).
 		Str("onBehalfOf", subject.String()).
-		Bool("forwardable", requester.OKToAuthAsDelegate).
+		Bool("trustedToAuthForDelegation", requester.OKToAuthAsDelegate).
 		Str("from", addrString(from)).
 		Msg("protocol transition requested")
 
@@ -405,7 +410,7 @@ func (s *Server) s4u2Self(
 		Target:      target,
 		Now:         now,
 		From:        from,
-		Forwardable: requester.OKToAuthAsDelegate,
+		Forwardable: forwardable,
 		TicketKind:  "s4u2self",
 	})
 }
@@ -545,7 +550,7 @@ func (s *Server) s4u2Proxy(
 		Now:         now,
 		From:        from,
 		SourceTGT:   &inner,
-		Forwardable: true,
+		Forwardable: forwardableAlways,
 		Delegation: &pac.S4UDelegationInfo{
 			S4U2proxyTarget:      unicodeString(target.String()),
 			TransitedListSize:    1,
@@ -683,12 +688,32 @@ type issueSpec struct {
 
 	// SourceTGT, when set, is the ticket whose flags and transited path this one inherits.
 	SourceTGT *messages.EncTicketPart
-	// Forwardable forces the flag on regardless of what the request asked for, which is how
-	// S4U tickets are marked delegable.
-	Forwardable bool
+	// Forwardable decides the FORWARDABLE flag where the request may not: the S4U tickets.
+	Forwardable forwardability
 	Delegation  *pac.S4UDelegationInfo
 	TicketKind  string
 }
+
+// forwardability is who decides whether a ticket is forwardable.
+type forwardability int
+
+const (
+	// forwardableAsRequested is every ordinary ticket: set when the request asks for it and both
+	// principals' policy allows it.
+	forwardableAsRequested forwardability = iota
+	// forwardableAlways is an S4U2Proxy ticket, whose evidence already had to be forwardable.
+	forwardableAlways
+	// forwardableUnlessBarred is an S4U2Self ticket for a service trusted to authenticate for
+	// delegation: forwardable whether or not it was asked for, unless the user's own policy forbids
+	// forwarding — MS-SFU section 3.2.5.1.2's account "sensitive and cannot be delegated", which
+	// protocol transition must not route around.
+	forwardableUnlessBarred
+	// forwardableNever is an S4U2Self ticket for a service that is not trusted to authenticate for
+	// delegation. Every client asks for FORWARDABLE, and honouring the request would make the
+	// OK_TO_AUTH_AS_DELEGATE flag decide nothing: the ticket would be valid evidence for S4U2Proxy,
+	// and the service could impersonate anyone towards its delegation targets without the right.
+	forwardableNever
+)
 
 // issueTicket applies policy to a request and mints the resulting ticket.
 func (s *Server) issueTicket(ctx context.Context, spec issueSpec) ([]byte, *protocolError) {
@@ -723,8 +748,18 @@ func (s *Server) issueTicket(ctx context.Context, spec issueSpec) ([]byte, *prot
 	}
 
 	tktFlags := ticketFlags(spec.Body, client, server, times, false, ticketWasPreAuthenticated(spec.SourceTGT))
-	if spec.Forwardable {
+	switch spec.Forwardable {
+	case forwardableAsRequested:
+	case forwardableAlways:
 		types.SetFlag(&tktFlags, flags.Forwardable)
+	case forwardableUnlessBarred:
+		if client.AllowForwardable {
+			types.SetFlag(&tktFlags, flags.Forwardable)
+		} else {
+			types.UnsetFlag(&tktFlags, flags.Forwardable)
+		}
+	case forwardableNever:
+		types.UnsetFlag(&tktFlags, flags.Forwardable)
 	}
 
 	transited, perr := s.transitedFor(ctx, spec)

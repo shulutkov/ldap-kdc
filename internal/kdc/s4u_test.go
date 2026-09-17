@@ -255,7 +255,10 @@ func TestS4U2SelfWithoutTheDelegationFlagIsNotForwardable(t *testing.T) {
 
 	self := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, frontEndSPN)
 
-	raw := tgsRequest(t, h, asRep.CName, asRep.Ticket, asRep.DecryptedEncPart.Key, self, nil,
+	// FORWARDABLE is asked for, as every client asks for it: a KDC that honoured the request would
+	// make the flag decide nothing.
+	raw := tgsRequest(t, h, asRep.CName, asRep.Ticket, asRep.DecryptedEncPart.Key, self,
+		func(body *messages.KDCReqBody) { types.SetFlag(&body.KDCOptions, flags.Forwardable) },
 		[]types.PAData{forUserPAData(t, "alice", asRep.DecryptedEncPart.Key)})
 
 	rep, errText := exchange(t, h, raw)
@@ -268,7 +271,7 @@ func TestS4U2SelfWithoutTheDelegationFlagIsNotForwardable(t *testing.T) {
 	}
 
 	if types.IsFlagSet(&rep.DecryptedEncPart.Flags, flags.Forwardable) {
-		t.Error("the ticket is forwardable without OK_TO_AUTH_AS_DELEGATE")
+		t.Error("the ticket is forwardable without OK_TO_AUTH_AS_DELEGATE, because the request asked for it")
 	}
 
 	// And because it is not forwardable, the delegation that would follow it is refused.
@@ -284,6 +287,55 @@ func TestS4U2SelfWithoutTheDelegationFlagIsNotForwardable(t *testing.T) {
 		t.Fatal("a non-forwardable evidence ticket was accepted for delegation")
 	} else if !strings.Contains(errText, "KDC_ERR_BADOPTION") {
 		t.Errorf("error = %q, want KDC_ERR_BADOPTION", errText)
+	}
+}
+
+// TestAUserBarredFromDelegationIsNotDelegatedByProtocolTransition: a user whose own policy forbids
+// forwarding — Active Directory's "account is sensitive and cannot be delegated" — gets a
+// non-forwardable S4U2Self ticket even from a service trusted to authenticate for delegation, so
+// no service can delegate them onwards.
+func TestAUserBarredFromDelegationIsNotDelegatedByProtocolTransition(t *testing.T) {
+	ctx := context.Background()
+	h, asRep := s4uSetup(t)
+
+	if _, err := h.store.UpdatePrincipal(ctx, krbkeys.MustParseName("alice", testRealm),
+		func(p *store.Principal) error {
+			p.AllowForwardable = false
+
+			return nil
+		}); err != nil {
+		t.Fatalf("barring alice from forwarding: %v", err)
+	}
+
+	self := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, frontEndSPN)
+
+	raw := tgsRequest(t, h, asRep.CName, asRep.Ticket, asRep.DecryptedEncPart.Key, self,
+		func(body *messages.KDCReqBody) { types.SetFlag(&body.KDCOptions, flags.Forwardable) },
+		[]types.PAData{forUserPAData(t, "alice", asRep.DecryptedEncPart.Key)})
+
+	rep, errText := exchange(t, h, raw)
+	if len(errText) > 0 {
+		t.Fatalf("protocol transition refused: %s", errText)
+	}
+
+	if err := rep.DecryptEncPart(asRep.DecryptedEncPart.Key); err != nil {
+		t.Fatalf("decrypting the reply: %v", err)
+	}
+
+	if types.IsFlagSet(&rep.DecryptedEncPart.Flags, flags.Forwardable) {
+		t.Fatal("a user barred from forwarding got a forwardable protocol transition ticket")
+	}
+
+	backEnd := types.NewPrincipalName(nametype.KRB_NT_PRINCIPAL, backEndSPN)
+
+	proxy := tgsRequest(t, h, asRep.CName, asRep.Ticket, asRep.DecryptedEncPart.Key, backEnd,
+		func(body *messages.KDCReqBody) {
+			types.SetFlag(&body.KDCOptions, optionCNameInAddlTkt)
+			body.AdditionalTickets = []messages.Ticket{rep.Ticket}
+		}, nil)
+
+	if _, errText := exchange(t, h, proxy); !strings.Contains(errText, "KDC_ERR_BADOPTION") {
+		t.Errorf("delegating a barred user: error = %q, want KDC_ERR_BADOPTION", errText)
 	}
 }
 
