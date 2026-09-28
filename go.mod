@@ -5,8 +5,8 @@ go 1.27
 require (
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/glauth/ldap v0.0.0-20260718202943-34c5f9b3cbf1
-	github.com/go-krb5/krb5 v0.1.1-0.20260822030741-7b3360ef1519
-	github.com/go-krb5/x v0.3.3
+	github.com/go-krb5/krb5 v0.1.1-0.20260926041222-f89757a5d4ed
+	github.com/go-krb5/x v0.4.1
 	github.com/miekg/dns v1.1.73
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.24.1
@@ -45,5 +45,3 @@ require (
 )
 
 replace github.com/glauth/ldap => github.com/shulutkov/glauth-ldap v0.0.0-20260915113542-9bcd1fb9533f
-
-replace github.com/go-krb5/krb5 => github.com/shulutkov/krb5 v0.0.0-20260917055455-aff63c70bce5

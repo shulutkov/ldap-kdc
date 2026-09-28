@@ -19,8 +19,16 @@ github.com/go-asn1-ber/asn1-ber v1.5.8 h1:H9AZkK22UOmfX8J84ubyaZxKJZ3FMHVwn8swoM
 github.com/go-asn1-ber/asn1-ber v1.5.8/go.mod h1:hEBeB/ic+5LoWskz+yKT7vGhhPYkProFKoKdwZRWMe0=
 github.com/go-crypt/x v0.4.17 h1:SK642R97T/DyDRvm8FGu5Cr2z3rH5/mV+Axc7ve2PL0=
 github.com/go-crypt/x v0.4.17/go.mod h1:RtDB/Rvuknl8d0IvBtbRgi7UPQ+kt9mWLyIUNOBiep4=
+github.com/go-krb5/krb5 v0.1.0 h1:eckVEox/2y/0OlQiAPKWrRF2cVvLsu4a1JaEnF0EGaE=
+github.com/go-krb5/krb5 v0.1.0/go.mod h1:pjottanZMR4s9ITIh/cHBYoNMtqkK4IzXuplsihoncI=
+github.com/go-krb5/krb5 v0.1.1-0.20260822030741-7b3360ef1519 h1:7Esz/rdV4rtG+0T0hxrNXnU+mV3l3y5jYK+shZ+7yMU=
+github.com/go-krb5/krb5 v0.1.1-0.20260822030741-7b3360ef1519/go.mod h1:ww1eLYr6wFSGvgdnBGtfcbyvZVyEqlFQt8XWG4s0g5U=
+github.com/go-krb5/krb5 v0.1.1-0.20260926041222-f89757a5d4ed h1:j16heUD6u5vrBa/slLbh9fD37Hp9ClpBmiLuNBqvt/0=
+github.com/go-krb5/krb5 v0.1.1-0.20260926041222-f89757a5d4ed/go.mod h1:YRqHYotBzd1UGox7IGW8Hr+F1eGoyEUah4bNZA/z5Vk=
 github.com/go-krb5/x v0.3.3 h1:emXl4aKQNbJXwO6i+0YKYGxRUNOO4zAzIJ3PihJsKTY=
 github.com/go-krb5/x v0.3.3/go.mod h1:QdsTySF71CYzhAcC1PLzAFcnlYym1RfxxhxoEwO+zU4=
+github.com/go-krb5/x v0.4.1 h1:MdCuNaIGWzf+jLzVhvPrenMKtUYA8BPDELsCr1hWn+A=
+github.com/go-krb5/x v0.4.1/go.mod h1:FDWh8jSHbqPtpxRdCZ+o1azQYt/LHS2vlHQLBRBL124=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFebv6EsYotImrt/Ppc5cXIriCSo=
