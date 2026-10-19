@@ -349,8 +349,13 @@ This creates `krbtgt/PARTNER.COM@EXAMPLE.COM` for outbound referrals and
 
 ## Authorization
 
-An authenticated LDAP client still needs a capability to read anything, granted on the account or
-on any group it belongs to:
+An authenticated LDAP client reads its own entry -- its DN, `memberOf`, the rest of what the entry
+publishes -- and nothing else, unless a capability lets it search more. That is the self-read
+every directory allows: an application that checks a user's password by a bind learns the user's
+groups as the user, with no account of searches beside it. A search below the base answers the
+bound account's own entry alone, wherever it starts and whatever it filters on; under `ou=groups` it
+answers nothing. Anything more needs a capability, granted on the account or on any group it
+belongs to:
 
 ```json
 {
@@ -647,9 +652,11 @@ named by its DN and carries a SID, and that is all. `unicodePwd`: no password, i
 readable over LDAP, and changing one goes through modify, `kpasswd` or the REST API.
 
 **Binding.** AD accepts a UPN or `DOMAIN\user` as a simple bind name. Here a bind name is a DN under
-the base, or an address-shaped string -- and that string is matched against `mail`, not against
-`userPrincipalName`. So `alice@EXAMPLE.COM` binds only when it is also the account's mail address:
-the UPN is a name to search BY, not one to bind AS. SASL is one mechanism rather than none: with `server.ldap_spn`
+the base, or an address-shaped string -- matched against `mail` first, and then, as a UPN, against
+the account's Kerberos principals of this realm, its aliases among them. So `alice@EXAMPLE.COM`
+binds as the account whose mail address it is, or else as the account of the principal
+`alice@EXAMPLE.COM`: a client that knows only the user's name binds without finding the entry first.
+`DOMAIN\user` is not taken. SASL is one mechanism rather than none: with `server.ldap_spn`
 set the root DSE offers `GSSAPI` and a client binds with a ticket, and left unset it offers an empty
 `supportedSASLMechanisms`. NTLM there is not, and neither is LDAP signing or sealing -- only the
 "no security layer" option is offered. LDAPS or StartTLS is what protects a bind, and over an

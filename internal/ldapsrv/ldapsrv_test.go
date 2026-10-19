@@ -214,6 +214,22 @@ func TestBind(t *testing.T) {
 		}
 	})
 
+	t.Run("by Kerberos principal name", func(t *testing.T) {
+		// No address of mail is alice@EXAMPLE.COM: the principal of the realm is.
+		if err := h.dial(t).Bind("alice@"+testRealm, alicePass); err != nil {
+			t.Errorf("bind by principal name: %v", err)
+		}
+		if err := h.dial(t).Bind("alice.smith@"+testRealm, alicePass); err != nil {
+			t.Errorf("bind by an alias of the principal: %v", err)
+		}
+		if err := h.dial(t).Bind("alice@"+testRealm, "wrong"); err == nil {
+			t.Error("bind by principal name with a wrong password succeeded")
+		}
+		if err := h.dial(t).Bind("alice@OTHER.REALM", alicePass); err == nil {
+			t.Error("bind by a principal of another realm succeeded")
+		}
+	})
+
 	t.Run("anonymously", func(t *testing.T) {
 		if err := h.dial(t).Bind("", ""); err != nil {
 			t.Errorf("anonymous bind: %v", err)
@@ -416,22 +432,52 @@ func TestSearchGroupsListsMembers(t *testing.T) {
 	}
 }
 
-func TestSearchIsRefusedWithoutACapability(t *testing.T) {
+// TestASearchWithoutACapabilitySeesTheAccountsOwnEntryAlone: an account that may not search the
+// tree reads its own entry — its DN and memberOf, which is what checking a password and the groups
+// over LDAP needs — and nobody else's, wherever it searches from and whatever it asks for.
+func TestASearchWithoutACapabilitySeesTheAccountsOwnEntryAlone(t *testing.T) {
 	h := newHarness(t)
 
 	conn := h.dial(t)
-	if err := conn.Bind("cn=bob,ou=staff,ou=users,"+testBaseDN, "bob's long password"); err != nil {
+	if err := conn.Bind("bob@"+testRealm, "bob's long password"); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 
-	_, err := conn.Search(ldap.NewSearchRequest(
-		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-		"(objectClass=posixAccount)", []string{"cn"}, nil))
-	if err == nil {
-		t.Fatal("an account with no search capability searched the tree")
+	for _, base := range []string{testBaseDN, "ou=users," + testBaseDN, "ou=groups," + testBaseDN} {
+		res, err := conn.Search(ldap.NewSearchRequest(
+			base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+			"(objectClass=*)", []string{"uid", "memberOf"}, nil))
+		if err != nil {
+			t.Fatalf("search of %s: %v", base, err)
+		}
+		var dns []string
+		for _, e := range res.Entries {
+			dns = append(dns, e.DN)
+		}
+		want := []string{}
+		if base != "ou=groups,"+testBaseDN {
+			want = []string{"cn=bob,ou=staff,ou=users," + testBaseDN}
+		}
+		if strings.Join(dns, ";") != strings.Join(want, ";") {
+			t.Errorf("under %s bob sees %v, want %v", base, dns, want)
+		}
 	}
-	if !strings.Contains(err.Error(), "Insufficient Access Rights") {
-		t.Errorf("error = %v, want insufficient access rights", err)
+
+	// alice's entry is not bob's to read, by its name or by its DN.
+	res, err := conn.Search(ldap.NewSearchRequest(
+		aliceDN(), ldap.ScopeBaseObject, ldap.NeverDerefAliases, 0, 0, false, "(objectClass=*)", []string{"uid"}, nil))
+	if err == nil && len(res.Entries) > 0 {
+		t.Errorf("bob read alice's entry: %v", res.Entries[0].DN)
+	}
+
+	// His own groups, as the account itself.
+	res, err = conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false, "(uid=bob)", []string{"memberOf"}, nil))
+	if err != nil || len(res.Entries) != 1 {
+		t.Fatalf("bob's own entry: %v, %v", res, err)
+	}
+	if got := res.Entries[0].GetAttributeValues("memberOf"); !slices.Contains(got, "ou=everyone,ou=groups,"+testBaseDN) {
+		t.Errorf("bob's memberOf = %v, want everyone among them", got)
 	}
 }
 

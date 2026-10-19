@@ -167,10 +167,21 @@ func TestLDAPSearch(t *testing.T) {
 
 	shared.addUser(t, user, password, false)
 
-	// Reading the tree needs a capability, so an account without one sees nothing.
-	_, code := shared.run(t, ldapsearch(user, password, "(objectClass=posixAccount)", "cn"))
-	if code == 0 {
-		t.Error("an account with no search capability read the directory")
+	// Reading the tree needs a capability; an account without one still reads its own entry —
+	// its DN and groups, which is what checking a password over LDAP is for — and nothing more.
+	own := shared.mustRun(t, ldapsearch(user, password, "(objectClass=posixAccount)", "cn memberOf"))
+	if !strings.Contains(own, "dn: cn="+user+",ou=e2e,ou=users,dc=example,dc=com") {
+		t.Errorf("the account's own entry is not in the answer:\n%s", own)
+	}
+	if n := strings.Count(own, "\ndn: "); n != 1 {
+		t.Errorf("an account with no search capability sees %d entries, want its own alone:\n%s", n, own)
+	}
+
+	// The bind also takes the account's Kerberos principal name, user@REALM, as a bind by user
+	// principal name does in Active Directory: where the entry sits is the directory's to know.
+	byPrincipal := shared.mustRun(t, ldapsearchDN(user+"@"+realm, password, "(uid="+user+")", "cn"))
+	if !strings.Contains(byPrincipal, "dn: cn="+user+",ou=e2e,ou=users,dc=example,dc=com") {
+		t.Errorf("a bind by principal name did not reach the account's entry:\n%s", byPrincipal)
 	}
 
 	shared.mustAPI(t, "PATCH", "/users/"+user, map[string]any{

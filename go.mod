@@ -45,3 +45,7 @@ require (
 )
 
 replace github.com/glauth/ldap => github.com/shulutkov/glauth-ldap v0.0.0-20260915113542-9bcd1fb9533f
+
+// The fork with the SASL GSSAPI fix: a sealed selection where integrity was negotiated
+// is taken, as ldap3 sends it (2026-10-05).
+replace github.com/go-krb5/krb5 => github.com/shulutkov/krb5 v0.0.0-20261005140242-d0647d5a94cd

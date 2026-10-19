@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/shulutkov/ldap-kdc/internal/failban"
+	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 )
@@ -246,6 +247,11 @@ func (h *Handler) Search(boundDN string, req ldap.SearchRequest, conn net.Conn) 
 			fmt.Errorf("search base %s is outside %s", searchBaseDN, h.cfg.BaseDN)
 	}
 
+	// Without a capability to search the base, an account sees its own entry and nothing else:
+	// the self-read every directory allows, so that whatever checked its password over LDAP may
+	// learn its DN and the groups it is in (memberOf) as the account itself, with no account of
+	// searches beside it. Anything else of the tree stays out of the answer.
+	selfOnly := false
 	if !h.cfg.IgnoreCapabilities {
 		allowed, err := h.st.HasCapability(ctx, boundUser, "search", searchBaseDN)
 		if err != nil {
@@ -253,13 +259,7 @@ func (h *Handler) Search(boundDN string, req ldap.SearchRequest, conn net.Conn) 
 
 			return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultOperationsError}, err
 		}
-		if !allowed {
-			h.log.Info().Str("dn", boundDN).Str("base", searchBaseDN).Msg("search denied by capabilities")
-			h.result("search", "denied")
-
-			return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultInsufficientAccessRights},
-				fmt.Errorf("no capability allows %s to search %s", boundDN, searchBaseDN)
-		}
+		selfOnly = !allowed
 	}
 
 	entries, err := h.candidates(ctx, searchBaseDN, req)
@@ -268,12 +268,32 @@ func (h *Handler) Search(boundDN string, req ldap.SearchRequest, conn net.Conn) 
 
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultOperationsError}, err
 	}
+	if selfOnly {
+		own := entries[:0]
+		for _, e := range entries {
+			if isAccountOf(e, boundUser.Name) {
+				own = append(own, e)
+			}
+		}
+		entries = own
+		h.log.Debug().Str("dn", boundDN).Str("base", searchBaseDN).Msg("search without a capability: the account's own entry alone")
+	}
 
 	h.log.Debug().Str("dn", boundDN).Str("base", searchBaseDN).Str("filter", req.Filter).
 		Int("entries", len(entries)).Msg("search")
 	h.result("search", "ok")
 
 	return success(entries), nil
+}
+
+// isAccountOf says whether e is the account entry of the user called name.
+func isAccountOf(e *ldap.Entry, name string) bool {
+	account := false
+	for _, oc := range e.GetAttributeValues("objectClass") {
+		account = account || strings.EqualFold(oc, "posixAccount")
+	}
+
+	return account && strings.EqualFold(e.GetAttributeValue("uid"), name)
 }
 
 // candidates gathers the entries that could match, based on where in the tree the search starts.
@@ -584,6 +604,13 @@ func (h *Handler) findBindUserReason(ctx context.Context, dn string, checkGroup 
 			}
 		}
 
+		// No address of mail: the name may be a Kerberos principal of this realm, user@REALM — or one
+		// of its aliases — as a bind by user principal name takes it in Active Directory. A client
+		// that knows the user's name and not where the entry sits binds with that.
+		if u, ok := h.userOfPrincipal(ctx, dn); ok {
+			return u, ldap.LDAPResultSuccess, ""
+		}
+
 		return nil, ldap.LDAPResultInvalidCredentials, reasonUnknownName
 	}
 
@@ -620,6 +647,28 @@ func (h *Handler) findBindUserReason(ctx context.Context, dn string, checkGroup 
 	}
 
 	return user, ldap.LDAPResultSuccess, ""
+}
+
+// userOfPrincipal is the account a principal name of this realm, user@REALM, belongs to.
+func (h *Handler) userOfPrincipal(ctx context.Context, name string) (*store.User, bool) {
+	local, realm, ok := strings.Cut(name, "@")
+	if !ok || local == "" || !strings.EqualFold(realm, h.cfg.Realm) {
+		return nil, false
+	}
+	pn, err := krbkeys.ParseName(local, h.cfg.Realm)
+	if err != nil {
+		return nil, false
+	}
+	p, err := h.st.GetPrincipal(ctx, pn)
+	if err != nil || p.UserID == nil {
+		return nil, false
+	}
+	u, err := h.st.GetUserByID(ctx, *p.UserID)
+	if err != nil {
+		return nil, false
+	}
+
+	return u, true
 }
 
 // classifyDN says whether a DN names a user or a group, and what it is called.
