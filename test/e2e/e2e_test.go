@@ -26,6 +26,8 @@ func TestDNSDiscovery(t *testing.T) {
 		{"realm of the domain", dig("-t TXT _kerberos." + domain), `"` + realm + `"`},
 		{"the server's own address", dig("-t A " + kdcHost), serviceIP},
 		{"reverse of that address", dig("-x " + serviceIP), kdcHost + "."},
+		{"the vault's address", dig("-t A " + vaultHost), vaultIP},
+		{"reverse of the vault's address", dig("-x " + vaultIP), vaultHost + "."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := shared.mustRun(t, tc.query)
@@ -70,16 +72,16 @@ func TestKinitFindsTheKDCThroughDNS(t *testing.T) {
 	}
 }
 
-// TestServiceTicketWithHostCanonicalization exercises the reverse zone. MIT krb5 resolves a
-// host-based service name forward and then back again before building the principal, so the
-// answer this service gives to the reverse query decides which principal is asked for.
+// TestServiceTicketWithHostCanonicalization exercises the reverse zone. The host here is one no
+// container owns, so the reverse query falls through Docker's embedded resolver to the zone under
+// test, and the answer this service gives to it decides which principal a client would build.
 func TestServiceTicketWithHostCanonicalization(t *testing.T) {
 	const (
 		user     = "bob"
 		password = "another long enough password"
 		host     = "www." + domain
 		spn      = "HTTP/" + host
-		hostIP   = "10.99.0.20"
+		hostIP   = "10.99.0.40"
 	)
 
 	shared.addUser(t, user, password, false)

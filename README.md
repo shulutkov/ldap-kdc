@@ -55,7 +55,8 @@ master key held in a separate file. A stolen database is not, by itself, a stole
 ## What it speaks
 
 **LDAP / LDAPS** — bind (with TOTP and application passwords, or with a Kerberos ticket over SASL
-GSSAPI), search, modify, delete. StartTLS on the plain port. The DN layout follows glauth's, so existing client configuration keeps working:
+GSSAPI), search, modify, delete. StartTLS on the plain port. The DN layout follows glauth's, so existing client
+configuration keeps working:
 
 ```
 cn=alice,ou=staff,ou=users,dc=example,dc=com     a user, under its primary group
@@ -265,25 +266,29 @@ themselves, next to what they describe. Adding an endpoint means adding its row 
 handler, pattern and documentation together -- which is also what makes an undocumented route
 impossible to add by accident.
 
-| Method           | Path                                      | Purpose                                                      |
-|------------------|-------------------------------------------|--------------------------------------------------------------|
-| GET              | `/api/v1/stats`                           | realm summary: counts, enctypes, accounts without a password |
-| GET POST         | `/api/v1/users`                           | list, create (the Kerberos principal is created with it)     |
-| GET PATCH DELETE | `/api/v1/users/{name}`                    | read, edit, remove                                           |
-| POST             | `/api/v1/users/{name}/password`           | set the password on both sides                               |
-| GET POST         | `/api/v1/users/{name}/app-passwords`      | list, mint (the secret is returned once)                     |
-| DELETE           | `/api/v1/users/{name}/app-passwords/{id}` | revoke one                                                   |
-| GET POST         | `/api/v1/groups`                          | list, create                                                 |
-| GET PATCH DELETE | `/api/v1/groups/{name}`                   | read, edit, remove (incl. `customAttributes`)                |
-| GET              | `/api/v1/groups/{name}/members`           | resolved membership, following included groups               |
-| GET POST         | `/api/v1/principals`                      | list, create                                                 |
-| GET PATCH DELETE | `/api/v1/principals/{name}`               | read, edit policy and `aliases`, remove                      |
-| POST             | `/api/v1/principals/{name}/password`      | re-key from a password or `{"randomize": true}`              |
-| GET              | `/api/v1/principals/{name}/keytab`        | keytab for the current key version                           |
-| GET POST         | `/api/v1/dns/records`                     | list (optionally `?name=`), create a record                  |
-| DELETE           | `/api/v1/dns/records/{id}`                | remove one                                                   |
-| GET POST         | `/api/v1/trusts`                          | list, create a cross-realm trust                             |
-| GET PATCH DELETE | `/api/v1/trusts/{realm}`                  | read, edit, remove                                           |
+| Method           | Path                                       | Purpose                                                      |
+|------------------|--------------------------------------------|--------------------------------------------------------------|
+| GET              | `/api/v1/stats`                            | realm summary: counts, enctypes, accounts without a password |
+| GET POST         | `/api/v1/users`                            | list, create (the Kerberos principal is created with it)     |
+| GET PATCH DELETE | `/api/v1/users/{name}`                     | read, edit, remove                                           |
+| POST             | `/api/v1/users/{name}/password`            | set the password on both sides                               |
+| GET POST         | `/api/v1/users/{name}/app-passwords`       | list, mint (the secret is returned once)                     |
+| DELETE           | `/api/v1/users/{name}/app-passwords/{id}`  | revoke one                                                   |
+| GET              | `/api/v1/users/{name}/certificates`        | list the account's imported certificates                     |
+| POST             | `/api/v1/users/{name}/certificates/import` | import a certificate PEM (published to LDAP)                 |
+| GET POST         | `/api/v1/groups`                           | list, create                                                 |
+| GET PATCH DELETE | `/api/v1/groups/{name}`                    | read, edit, remove (incl. `customAttributes`)                |
+| GET              | `/api/v1/groups/{name}/members`            | resolved membership, following included groups               |
+| GET POST         | `/api/v1/principals`                       | list, create                                                 |
+| GET PATCH DELETE | `/api/v1/principals/{name}`                | read, edit policy and `aliases`, remove                      |
+| POST             | `/api/v1/principals/{name}/password`       | re-key from a password or `{"randomize": true}`              |
+| GET              | `/api/v1/principals/{name}/keytab`         | keytab for the current key version                           |
+| GET POST         | `/api/v1/dns/records`                      | list (optionally `?name=`), create a record                  |
+| DELETE           | `/api/v1/dns/records/{id}`                 | remove one                                                   |
+| GET POST         | `/api/v1/trusts`                           | list, create a cross-realm trust                             |
+| GET PATCH DELETE | `/api/v1/trusts/{realm}`                   | read, edit, remove                                           |
+| PUT DELETE       | `/api/v1/vault/config`                     | configure / stop the Vault PKI enrollment                    |
+| GET              | `/api/v1/vault/status`                     | enrollment state: configured, enrolled, expiry, last error   |
 
 Principal names may carry a realm (`HTTP/host@OTHER.COM`); without one the service realm applies.
 A password change keeps the previous key version, so tickets and keytabs issued before the change
@@ -392,8 +397,8 @@ an operation accepts, their types, which are required, their descriptions and th
 service applies all come from the Go types the handlers decode — the page keeps no second list of
 any of it, so a form cannot offer a field the API does not take. An edit sends only what changed.
 rjsf's usual ajv validator is left out on purpose: ajv compiles schemas with `new Function`, which the
-console's content-security policy refuses, so the browser checks what the markup can express
-(required fields, numbers) and the API decides the rest and says why.
+console's content-security policy refuses, so the browser checks what the markup can express (required fields, numbers)
+and the API decides the rest and says why.
 
 - **Kerberos, through SPNEGO.** Set `api.spn` to `HTTP/` and the host name the console is reached by.
   The console tries it on arrival, and a browser that trusts the host answers the challenge with the
@@ -432,6 +437,40 @@ too. Set `api.ui: false` to leave the console out.
 
 > **Behaviour change.** The management API used to be open when `api.token` was empty. It no longer
 > answers anonymously at all: sign in as an administrator, or set `api.token` for automation.
+
+## OpenBao / Vault PKI
+
+The service holds no certificate authority of its own — in a test rig the CA is one more thing to
+operate, and OpenBao (or Vault) already is one. Instead the service can enroll for its own LDAPS
+certificate AT that CA, authenticating the way everything else here authenticates: with Kerberos.
+
+The wiring is deliberate. A bootstrap plan creates the service principal OpenBao's kerberos auth
+method will expect (`HTTP/vault.example.com`) and the account the service will log in as; the
+management API hands the principal's keytab over, and OpenBao is pointed at this directory for its
+kerberos auth and at this KDC for its tickets. Then one call — `PUT /api/v1/vault/config` with the
+CA's address, the login principal, the PKI mount and role, and the names the certificate should
+carry — starts an enrollment loop inside the service: it builds a keytab from its own store (the
+keys never leave it), gets a service ticket from its own KDC, logs in over SPNEGO, and asks the PKI
+to sign a CSR. The private key is generated locally and never crosses the wire; only the CSR does.
+
+An `ldaps:` section with no `cert_path` is what makes this a bootstrap sequence rather than a
+chicken-and-egg problem: the listener starts without a certificate, handshakes fail until the first
+enrollment lands, and from then on the listener serves the enrolled certificate, renewed before
+expiry without a restart. Point `cert_path` at files instead and none of this machinery wakes up.
+`GET /api/v1/vault/status` reports where the loop is — configured, enrolled, the certificate's
+expiry, the last error — and `DELETE /api/v1/vault/config` stops it; the listener keeps its last
+certificate.
+
+A certificate OpenBao issues to a person can come back the same way:
+`POST /api/v1/users/{name}/certificates/import` takes a PEM, stores the DER, and the directory
+starts publishing it as `userCertificate;binary` on the account's entry, so a client that looks the
+certificate up through LDAP finds whatever the CA issued. The service keeps no private keys here —
+the certificate is public by nature, and import is all there is: no issuance, no revocation list,
+because those are the CA's job.
+
+The end-to-end suite runs exactly this rig: OpenBao in a third container, kerberos auth against the
+directory, a PKI root, the enrollment above, and then `curl --negotiate` from the client container
+to log a person in and pull a certificate from the role.
 
 ## Operational notes
 
@@ -554,6 +593,61 @@ records will send them somewhere nothing is listening.
 Mount a volume over `/var/lib/ldap-kdc`. It holds the database and the master key, and the key is
 the one file whose loss cannot be recovered from.
 
+## Docker Compose with OpenBao
+
+The whole arrangement of the [OpenBao / Vault PKI](#openbao--vault-pki) section — the service, the
+CA it enrolls against, and the wiring between them — also comes as a compose stand, for poking at
+by hand rather than from a test:
+
+```sh
+docker compose up -d --build
+./compose/setup.sh
+```
+
+Two containers on a fixed `10.99.0.0/24` subnet: the service at 10.99.0.10 (`kdc.example.com`),
+OpenBao at 10.99.0.20 (`vault.example.com`). The addresses are fixed because the DNS zone and the
+enrollment have to name them before the containers exist. OpenBao's image is built from
+`test/e2e/testdata/Dockerfile.openbao` — the same one the end-to-end suite uses — with the
+kerberos auth and PKCS#11 seal plugins (both external to the stock OpenBao build) and a SoftHSM
+token it auto-unseals against, so there is no unseal ritual to perform.
+
+`compose/setup.sh` is the wiring, and it is idempotent. It initializes OpenBao (stashing the root
+token and the recovery key in `compose/vault-keys.json`, mode 600 — a demo stand, not a secret
+store), registers the kerberos plugin and points it at the directory over plain LDAP, mounts the
+PKI with a root CA and two roles, hands the `HTTP/vault.example.com` keytab over, starts the
+service's enrollment — and only once the certificate is in place switches the plugin's directory
+connection to LDAPS, trusting the CA the PKI just made. From then on `127.0.0.1:636` serves a
+certificate signed by that CA, and a Kerberos login to OpenBao makes its LDAP lookups over TLS.
+
+The bootstrap plan (`compose/bootstrap.yaml`) brings up a demo account `alice` (password
+`alice demo password`) in the `vault-users` group, which maps to the `user-certs` policy. The
+stand's DNS lives inside the network — port 53 is deliberately not published — so the natural
+place to be a client is a container on it:
+
+```sh
+docker build -t ldap-kdc-client test/e2e/testdata -f test/e2e/testdata/Dockerfile.client
+docker run --rm -it --network ldap-kdc-example --dns 10.99.0.10 ldap-kdc-client bash
+
+# inside:
+printf 'alice demo password\n' | kinit alice@EXAMPLE.COM
+curl -sf --negotiate -u : -X POST http://vault.example.com:8200/v1/auth/kerberos/login | jq .auth.policies
+# ["default","user-certs"] — the group membership came from the directory, over LDAPS
+ldapsearch -x -H ldaps://kdc.example.com:636 -D 'cn=svc-vault-ldap,ou=svc,ou=users,dc=example,dc=com' \
+    -w 'vault ldap bind password' -b 'ou=users,dc=example,dc=com' '(uid=alice)' cn
+```
+
+A krb5.conf on the client with `dns_lookup_kdc = true` finds the KDC through the zone's SRV
+records; keep `rdns = false` there, because Docker's embedded resolver answers the reverse query
+for a container's address with the container's name rather than the zone's. From the host, the
+same works against `127.0.0.1:88` with an explicit `[realms]` block. The management API and the
+console answer at `http://127.0.0.1:5555` (token `compose-token`), the CA certificate the LDAPS
+listener presents is at `http://127.0.0.1:8200/v1/pki/ca/pem`.
+
+`docker compose down -v` wipes the stand whole: the database, the CA, the SoftHSM token's
+contents — everything but the files in `compose/`, which regenerate on the next `up` and
+`setup.sh`. Bring the stand down before running the end-to-end suite, by the way: both claim the
+same `10.99.0.0/24` subnet, and Docker will not create overlapping networks.
+
 ## Continuous integration
 
 Two workflows, in `.github/workflows`:
@@ -633,8 +727,8 @@ left to a login that fails without saying why.
 is deliberately not the mail address. The two look alike because an AD deployment usually gives its
 UPN a suffix matching the mail domain, but they are different facts: an account with no mailbox
 still has a logon name. Publishing mail under this name left such an account with no logon name at
-all, and a client searching by one found nothing. Measured against OpenBao's Kerberos auth method
-(2026-09-08): configured with a UPN domain, it searches `(userPrincipalName=<account>@<REALM>)`, and
+all, and a client searching by one found nothing. Measured against OpenBao's Kerberos auth method (2026-09-08):
+configured with a UPN domain, it searches `(userPrincipalName=<account>@<REALM>)`, and
 a ticket that authenticated perfectly well belonged to an account it then could not find. The realm
 is the only suffix published -- AD's alternative UPN suffixes have no equivalent -- and a client
 that can be told to search another attribute (`uid`, `cn`) never needs this one. That is the usual
@@ -700,6 +794,18 @@ Stated plainly, because finding them at deployment time is worse:
   with `KDC_ERR_BADOPTION`.
 * **Single node.** SQLite with one writer; there is no replication.
 
+## Documentation
+
+The `docs/` directory carries the detailed reference this README only narrates:
+
+* [Configuration](docs/configuration.md) and the [bootstrap plan](docs/bootstrap.md);
+* the services: [LDAP directory](docs/directory.md), [Kerberos KDC and kpasswd](docs/kerberos.md),
+  [DNS](docs/dns.md), [REST API](docs/api.md), [OpenID Connect](docs/oidc.md),
+  [admin console](docs/console.md);
+* [architecture](docs/architecture.md), [operations](docs/operations.md);
+* the [OpenBao/Vault PKI integration](docs/openbao-pki.md), its
+  [compose stand](docs/docker-compose.md) and the [end-to-end rig](docs/e2e.md).
+
 ## Layout
 
 ```
@@ -715,6 +821,11 @@ internal/jws      ES256 signing and verification, one sealed key per issuer
 internal/failban  failed-attempt throttling shared by every door that takes a password
 ui                the administrators' console (React), built into internal/api/ui/dist by make build
 internal/secret   master key handling and AEAD sealing
+internal/dnssrv   the zone, discovery records, reverse answers
+internal/oidc     the OpenID Connect provider: code flow with PKCE, client credentials
+internal/bootstrap the plan applied before the first listener accepts
+internal/vaultpki the OpenBao/Vault enrollment: Kerberos login, CSR signing, LDAPS certificate
+docs              the detailed documentation (docs/README.md is the index)
 ```
 
 ## Tests
@@ -740,8 +851,18 @@ make e2e          # or: cd test/e2e && go test ./...
 ```
 
 It compiles the service, puts it in an image with a configuration file, and starts it next to a
-Debian container holding MIT krb5, OpenLDAP's clients and BIND's `dig`. The client's resolver
-points at the service and its `krb5.conf` carries nothing but a realm name, so the suite covers the
+Debian container holding MIT krb5, OpenLDAP's clients and BIND's `dig`. A third container runs
+OpenBao, also built for the stand: the kerberos auth method and the PKCS#11 seal are external
+plugins the stock image does not carry, so the stand's image bakes them in along with a SoftHSM
+token the server auto-unseals against. The kerberos auth method is pointed at the directory over
+what starts as plain LDAP, the
+service enrolls its LDAPS certificate from OpenBao's PKI over a Kerberos login, and the suite then
+logs a user in with `curl --negotiate`, pulls a certificate from a PKI role, and watches the
+kerberos auth switch to LDAPS once the certificate is in place. Set `E2E_VAULT_IMAGE=off` to skip
+that container and its tests. The client's resolver
+points at the service — its `/etc/resolv.conf` is a bind mount naming the service's name server,
+so the zone under test answers forward and reverse queries alike — and its `krb5.conf` carries
+nothing but a realm name, so the suite covers the
 things only a real client can show: that `kinit` finds the KDC through the SRV records with no
 `[realms]` block at all, that `kvno HTTP/www.example.com` resolves the host forward and back with
 `rdns` left on and still asks for the principal that exists, that an administratively set password

@@ -1,0 +1,84 @@
+# A two-container stand for poking at the service by hand: ldap-kdc and OpenBao, wired the way
+# the end-to-end suite wires them (compose/setup.sh does the wiring). The subnet is fixed
+# because the DNS zone and the enrollment name the addresses before the containers exist.
+#
+#   docker compose up -d --build
+#   ./compose/setup.sh
+#   docker compose down -v        # wipe, including the database and the CA
+
+name: ldap-kdc
+
+networks:
+  example:
+    name: ldap-kdc-example
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+          gateway: 10.99.0.1
+
+volumes:
+  ldap-kdc-data:
+
+services:
+  ldap-kdc:
+    build:
+      context: .
+      args:
+        VERSION: compose
+    image: ldap-kdc:compose
+    networks:
+      example:
+        ipv4_address: 10.99.0.10
+        aliases:
+          - kdc.example.com
+    # The process runs unprivileged and still binds 53, 88, 389 and 464; opening the low ports
+    # to unprivileged processes in this namespace is what makes that possible.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    volumes:
+      - ldap-kdc-data:/var/lib/ldap-kdc
+      - ./compose/ldap-kdc.yaml:/etc/ldap-kdc/ldap-kdc.yaml:ro
+      - ./compose/bootstrap.yaml:/etc/ldap-kdc/bootstrap.yaml:ro
+    # DNS stays inside the network: publishing 53 on a desktop asks for conflicts, and the
+    # zone exists for the containers (and anything pointed at them) anyway.
+    ports:
+      - 127.0.0.1:5555:5555
+      - 127.0.0.1:389:389
+      - 127.0.0.1:636:636
+      - 127.0.0.1:464:464
+      - 127.0.0.1:464:464/udp
+      - 127.0.0.1:88:88
+      - 127.0.0.1:88:88/udp
+
+  openbao:
+    build:
+      # The stand's own image: the kerberos auth and pkcs11 seal plugins, a SoftHSM token the
+      # server auto-unseals against, and the server configuration are baked in.
+      context: test/e2e/testdata
+      dockerfile: Dockerfile.openbao
+    image: ldap-kdc-compose-openbao:latest
+    command: ["server", "-config=/openbao/config.hcl"]
+    networks:
+      example:
+        ipv4_address: 10.99.0.20
+        aliases:
+          - vault.example.com
+    # The directory's own name server answers for the zone; Docker's embedded DNS would answer
+    # the reverse queries itself, with container names.
+    dns:
+      - 10.99.0.10
+    dns_search:
+      - example.com
+    volumes:
+      - ./compose/krb5.conf:/etc/krb5.conf:ro
+    ports:
+      - 127.0.0.1:8200:8200
+    depends_on:
+      # No condition: ldap-kdc is a scratch image with neither shell nor wget to healthcheck
+      # with, and compose/setup.sh waits for /readyz itself.
+      - ldap-kdc
+    healthcheck:
+      test: wget -q -O /dev/null http://127.0.0.1:8200/v1/sys/init
+      interval: 5s
+      timeout: 3s
+      retries: 12

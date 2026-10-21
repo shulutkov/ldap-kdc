@@ -69,6 +69,18 @@ func TestDefaultsComeFromTheStructTags(t *testing.T) {
 	}
 }
 
+func TestLDAPSMayDeferItsCertificate(t *testing.T) {
+	// With neither path the listener waits for a certificate enrolled through the management
+	// API; it is not a validation error.
+	cfg, err := Load(write(t, minimal+"ldaps:\n  enabled: true\n"))
+	if err != nil {
+		t.Fatalf("ldaps without certificate paths was rejected: %v", err)
+	}
+	if !cfg.LDAPS.Enabled {
+		t.Error("ldaps.enabled = false, want true")
+	}
+}
+
 func TestEnvironmentOverridesTheDefaults(t *testing.T) {
 	t.Setenv("SERVER_REALM", "FROM.ENV")
 	t.Setenv("KDC_LISTEN", "127.0.0.1:8888")
@@ -281,8 +293,13 @@ func TestValidation(t *testing.T) {
 			want: "S-1-5-21",
 		},
 		{
-			name: "ldaps without a certificate",
-			body: minimal + "ldaps:\n  enabled: true\n",
+			name: "ldaps with only a certificate",
+			body: minimal + "ldaps:\n  enabled: true\n  cert_path: server.crt\n",
+			want: "ldaps.cert_path",
+		},
+		{
+			name: "ldaps with only a key",
+			body: minimal + "ldaps:\n  enabled: true\n  key_path: server.key\n",
 			want: "ldaps.cert_path",
 		},
 		{

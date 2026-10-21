@@ -81,6 +81,9 @@ ldap:
 ldaps:
   enabled: false
   listen: 0.0.0.0:636
+  # With no cert_path the listener starts without a certificate and handshakes fail until one
+  # arrives from the Vault PKI enrollment (PUT /api/v1/vault/config); with both paths set the
+  # certificate comes from disk as before and the enrollment machinery stays off.
   # cert_path: /etc/ldap-kdc/tls.crt
   # key_path: /etc/ldap-kdc/tls.key
 

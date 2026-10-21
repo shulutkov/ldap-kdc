@@ -600,6 +600,12 @@ func (c *Config) validateTLS() error {
 		if !t.enabled {
 			continue
 		}
+		// LDAPS may start with no certificate on disk at all: the management API can enroll
+		// one with a Vault PKI afterwards, and the listener serves whatever the enrollment
+		// delivers. Half a pair is still a mistake.
+		if t.name == "ldaps" && len(t.certPath) == 0 && len(t.keyPath) == 0 {
+			continue
+		}
 		if len(t.certPath) == 0 || len(t.keyPath) == 0 {
 			return fmt.Errorf("%s.cert_path and %s.key_path are required when %s serves TLS",
 				t.name, t.name, t.name)

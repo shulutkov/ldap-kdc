@@ -20,6 +20,7 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
 	"github.com/shulutkov/ldap-kdc/internal/metrics"
 	"github.com/shulutkov/ldap-kdc/internal/store"
+	"github.com/shulutkov/ldap-kdc/internal/vaultpki"
 )
 
 // Config is what the API needs to know about the service it manages.
@@ -58,6 +59,10 @@ type Config struct {
 	// never be served. DNSDefaultTTL applies to a record created without one.
 	DNSZones      []string
 	DNSDefaultTTL int
+
+	// Vault is the Vault PKI enrollment manager the /api/v1/vault endpoints drive. Nil turns
+	// them into 503s.
+	Vault *vaultpki.Manager
 }
 
 // Server is the REST management interface.
@@ -276,6 +281,19 @@ func (s *Server) apiRoutes() []route {
 			tag: "users", summary: "Revoke an application password", request: new(appPasswordPath),
 			responses: []responseDoc{noContent("Revoked."), badRequest, unauthorized, notFound},
 		}}},
+		{"GET /api/v1/users/{name}/certificates", s.handleListUserCertificates, []operationDoc{{
+			tag: "users", summary: "List an account's certificates", request: new(getUserReq),
+			responses: []responseDoc{ok(new(certificatesBody), "The certificates, without the DER."), unauthorized, notFound},
+		}}},
+		{"POST /api/v1/users/{name}/certificates/import", s.handleImportUserCertificate, []operationDoc{{
+			tag: "users", summary: "Import an account certificate",
+			description: "Records a certificate an external authority has already issued to the " +
+				"account, so the directory publishes it as userCertificate;binary. This service " +
+				"issues nothing itself, and the private key is neither accepted nor stored: it " +
+				"never leaves wherever the certificate was issued.",
+			request:   new(certificateImportReq),
+			responses: []responseDoc{created(new(certificateBody), "Imported."), badRequest, unauthorized, notFound, conflict},
+		}}},
 
 		{"GET /api/v1/groups", s.handleListGroups, []operationDoc{{
 			tag: "groups", summary: "List groups",
@@ -399,6 +417,38 @@ func (s *Server) apiRoutes() []route {
 			description: "The shared krbtgt principals go with it, which is what stops tickets flowing.",
 			request:     new(trustPath),
 			responses:   []responseDoc{noContent("Removed."), unauthorized, notFound},
+		}}},
+
+		{"PUT /api/v1/vault/config", s.handlePutVaultConfig, []operationDoc{{
+			tag: "vault", summary: "Set up Vault PKI enrollment",
+			description: "Points the service at a Vault (or OpenBao) PKI and starts the enrollment " +
+				"loop: it logs in to Vault over Kerberos — against this service's own KDC, as the " +
+				"given principal — and has the PKI sign a fresh key's CSR. The certificate is what " +
+				"the LDAPS listener serves; it is replaced before it expires. A PUT replaces any " +
+				"configuration already running.",
+			request: new(vaultConfigRequest),
+			responses: []responseDoc{
+				ok(new(vaultStatusBody), "Configured; the enrollment loop is running."),
+				badRequest, unauthorized,
+				{status: http.StatusServiceUnavailable, body: new(errorBody), description: "No enrollment manager on this server."},
+			},
+		}}},
+		{"GET /api/v1/vault/status", s.handleGetVaultStatus, []operationDoc{{
+			tag: "vault", summary: "Vault PKI enrollment status",
+			responses: []responseDoc{
+				ok(new(vaultStatusBody), "Whether the integration is configured, whether a certificate has been enrolled, and the last failure if there was one."),
+				unauthorized,
+				{status: http.StatusServiceUnavailable, body: new(errorBody), description: "No enrollment manager on this server."},
+			},
+		}}},
+		{"DELETE /api/v1/vault/config", s.handleDeleteVaultConfig, []operationDoc{{
+			tag: "vault", summary: "Stop Vault PKI enrollment",
+			description: "Ends the enrollment loop and forgets the configuration. The certificate " +
+				"already enrolled keeps being served until the process stops.",
+			responses: []responseDoc{
+				noContent("Stopped."), unauthorized,
+				{status: http.StatusServiceUnavailable, body: new(errorBody), description: "No enrollment manager on this server."},
+			},
 		}}},
 	}
 }

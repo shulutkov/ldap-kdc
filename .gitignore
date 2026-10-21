@@ -15,6 +15,7 @@ ldap-kdc.yaml
 *.pem
 *.crt
 *.key
+compose/vault-keys.json
 
 # The console's dependencies, and its build, which make build produces and is never committed
 ui/node_modules/

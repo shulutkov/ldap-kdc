@@ -12,6 +12,9 @@ RUN apt-get update \
         ldap-utils \
         dnsutils \
         ca-certificates \
+        curl \
+        jq \
+        openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # The container exists to have commands run in it.

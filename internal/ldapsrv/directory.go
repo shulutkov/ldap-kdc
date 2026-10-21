@@ -65,6 +65,17 @@ func (b *entryBuilder) PosixAccounts(ctx context.Context) ([]*ldap.Entry, error)
 		return nil, err
 	}
 
+	// The certificates are fetched for every account at once for the same reason: a search that
+	// returns a hundred entries must not cost a hundred queries on top of it.
+	ids := make([]int64, 0, len(users))
+	for i := range users {
+		ids = append(ids, users[i].ID)
+	}
+	certs, err := b.st.UserCertificates(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
 	entries := make([]*ldap.Entry, 0, len(users))
 
 	for i := range users {
@@ -80,7 +91,7 @@ func (b *entryBuilder) PosixAccounts(ctx context.Context) ([]*ldap.Entry, error)
 			principal = &p
 		}
 
-		entries = append(entries, b.accountEntry(u, groupNames, gids, principal, rids[u.ID]))
+		entries = append(entries, b.accountEntry(u, groupNames, gids, principal, rids[u.ID], certs[u.ID]))
 	}
 
 	return entries, nil
@@ -92,6 +103,7 @@ func (b *entryBuilder) accountEntry(
 	gids []int,
 	principal *store.Principal,
 	rid int,
+	certificates []store.Certificate,
 ) *ldap.Entry {
 	primary := groupNames[u.PrimaryGroup]
 
@@ -193,6 +205,13 @@ func (b *entryBuilder) accountEntry(
 		&ldap.EntryAttribute{Name: "shadowWarning", Values: []string{"7"}},
 	)
 
+	if values := certificateValues(certificates, time.Now()); len(values) > 0 {
+		// The certificates imported for the account, as the DER an LDAP client expects under
+		// the binary spelling of the attribute — the same thing Active Directory publishes for
+		// a smart-card logon certificate.
+		attrs = append(attrs, &ldap.EntryAttribute{Name: "userCertificate;binary", Values: values})
+	}
+
 	if len(u.SSHKeys) > 0 {
 		// The same keys under every configured name: a reader looks for the one its schema taught
 		// it, and the account has to be found by either.
@@ -204,6 +223,21 @@ func (b *entryBuilder) accountEntry(
 	attrs = append(attrs, customAttributes(u.CustomAttrs)...)
 
 	return &ldap.Entry{DN: b.UserDN(u, primary), Attributes: attrs}
+}
+
+// certificateValues picks the account's standing certificates: the ones the current time leaves
+// inside their validity window. Publishing one that has lapsed or has not begun would hand a
+// client a certificate it must refuse anyway.
+func certificateValues(certificates []store.Certificate, now time.Time) []string {
+	var out []string
+	for _, c := range certificates {
+		if now.After(c.NotAfter) || now.Before(c.NotBefore) {
+			continue
+		}
+		out = append(out, string(c.DER))
+	}
+
+	return out
 }
 
 // customAttributes renders an object's custom attributes in name order, so two searches of the

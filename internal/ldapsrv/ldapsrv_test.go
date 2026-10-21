@@ -812,3 +812,62 @@ func TestAModifyCannotForgeAnAttributeTheDirectoryBuilds(t *testing.T) {
 		}
 	}
 }
+
+// A certificate imported for an account is published on its entry as userCertificate;binary —
+// the spelling a smart-card client reads, and the one Active Directory uses — but only while the
+// current time is inside the certificate's validity window. A lapsed certificate published anyway
+// would be one the client must refuse, handed to it by the directory itself.
+func TestAnAccountsCertificatesArePublishedWhileTheyStand(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	now := time.Now()
+	standing := &store.Certificate{
+		Serial: "07", Subject: "CN=alice", DER: []byte("the standing certificate"),
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+	}
+	lapsed := &store.Certificate{
+		Serial: "08", Subject: "CN=alice", DER: []byte("the lapsed certificate"),
+		NotBefore: now.Add(-2 * time.Hour), NotAfter: now.Add(-time.Hour),
+	}
+	for _, c := range []*store.Certificate{standing, lapsed} {
+		if err := h.store.AddCertificate(ctx, "alice", c); err != nil {
+			t.Fatalf("AddCertificate %s: %v", c.Serial, err)
+		}
+	}
+
+	conn := h.dial(t)
+	if err := conn.Bind(aliceDN(), alicePass); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	res, err := conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		"(cn=alice)", []string{"userCertificate;binary"}, nil))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(res.Entries))
+	}
+
+	// The DER crosses LDAP byte for byte: the attribute's values are the raw certificates.
+	values := res.Entries[0].GetAttributeValues("userCertificate;binary")
+	if len(values) != 1 || values[0] != "the standing certificate" {
+		t.Errorf("userCertificate;binary = %q, want the standing certificate alone", values)
+	}
+
+	// bob holds no certificate, so his entry must not invent the attribute.
+	res, err = conn.Search(ldap.NewSearchRequest(
+		testBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		"(cn=bob)", []string{"userCertificate;binary"}, nil))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(res.Entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(res.Entries))
+	}
+	if values := res.Entries[0].GetAttributeValues("userCertificate;binary"); len(values) != 0 {
+		t.Errorf("bob's userCertificate;binary = %q, want none", values)
+	}
+}

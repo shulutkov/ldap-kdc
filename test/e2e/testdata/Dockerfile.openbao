@@ -1,0 +1,56 @@
+# The OpenBao container for the end-to-end stand. The stock image carries neither the kerberos
+# auth method nor a PKCS#11 seal — both live in the openbao-plugins collection now — so this
+# bakes in what the stand needs:
+#
+#   - the kerberos auth plugin, with its SHA-256 next to it for `bao plugin register`;
+#   - the pkcs11 KMS plugin, declared in the server configuration (the only way a seal plugin
+#     can be registered: it has to exist before the server is unsealed);
+#   - SoftHSM with a token and an AES key, so the server auto-unseals against it;
+#   - the server configuration itself.
+#
+# Multi-arch by way of TARGETARCH: the harness passes runtime.GOARCH as a build argument, the
+# way docker build --platform would.
+FROM ghcr.io/openbao/openbao:latest
+
+ARG KERBEROS_PLUGIN_VERSION=v0.1.0
+ARG PKCS11_PLUGIN_VERSION=v0.2.1
+ARG TARGETARCH
+
+USER root
+
+# softhsm is the HSM; opensc brings pkcs11-tool, which creates the key the seal wraps with —
+# OpenBao deliberately does not create key material on its own.
+RUN apk add --no-cache softhsm opensc curl ca-certificates
+
+COPY openbao-config.hcl /openbao/config.hcl
+COPY softhsm2.conf /etc/softhsm2.conf
+
+ENV SOFTHSM2_CONF=/etc/softhsm2.conf
+
+RUN set -eu; \
+    case "$TARGETARCH" in \
+        amd64) asset=linux_amd64_v1 ;; \
+        arm64) asset=linux_arm64_v8 ;; \
+        *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /openbao/plugins; \
+    curl -fsL "https://github.com/openbao/openbao-plugins/releases/download/auth-kerberos-${KERBEROS_PLUGIN_VERSION}/openbao-plugin-auth-kerberos_${asset}.tar.gz" \
+        | tar xz -C /tmp; \
+    mv "/tmp/openbao-plugin-auth-kerberos_${asset}" /openbao/plugins/openbao-plugin-auth-kerberos; \
+    curl -fsL "https://github.com/openbao/openbao-plugins/releases/download/kms-pkcs11-${PKCS11_PLUGIN_VERSION}/openbao-plugin-kms-pkcs11_${asset}.tar.gz" \
+        | tar xz -C /tmp; \
+    mv "/tmp/openbao-plugin-kms-pkcs11_${asset}" /openbao/plugins/openbao-plugin-kms-pkcs11; \
+    chmod 755 /openbao/plugins/openbao-plugin-*; \
+    sha256sum /openbao/plugins/openbao-plugin-auth-kerberos | cut -d' ' -f1 \
+        > /openbao/plugins/openbao-plugin-auth-kerberos.sha256
+
+# The token and the seal's key are build-time fixtures of a throwaway stand, so the PINs are
+# fixed and simple. The token directory must belong to the user the server runs as: SoftHSM
+# writes there even for reads.
+RUN mkdir -p /var/lib/softhsm/tokens && \
+    softhsm2-util --init-token --free --label openbao --pin 1234 --so-pin 5678 && \
+    pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --token-label openbao \
+        --so-pin 5678 --pin 1234 --keygen --key-type aes:32 --label bao-root-key-aes && \
+    chown -R openbao:openbao /var/lib/softhsm /openbao/plugins
+
+USER openbao

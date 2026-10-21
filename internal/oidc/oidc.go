@@ -5,11 +5,12 @@
 // however recently the person typed one — which is the whole of the complaint this package
 // answers, and is not something a relying party can fix on its own.
 //
-// The scope is deliberately small: the authorization code flow with PKCE, for public clients,
-// against the accounts already here. No consent screen, no refresh tokens, no dynamic
-// registration, no confidential clients. What it does carry is the part the accounts make cheap —
-// the same credential decision as an LDAP bind (store.Authenticate), and the groups the directory
-// already resolves.
+// The scope is deliberately small: the authorization code flow with PKCE against the accounts
+// already here, and the client credentials grant for service accounts. No consent screen, no
+// refresh tokens, no dynamic registration. A client may still be confidential — the secret then
+// stands in addition to PKCE, not instead of it. What the package does carry is the part the
+// accounts make cheap — the same credential decision as an LDAP bind (store.Authenticate), and
+// the groups the directory already resolves.
 package oidc
 
 import (

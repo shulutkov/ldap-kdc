@@ -34,6 +34,7 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/secret"
 	"github.com/shulutkov/ldap-kdc/internal/store"
 	"github.com/shulutkov/ldap-kdc/internal/tlsutil"
+	"github.com/shulutkov/ldap-kdc/internal/vaultpki"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
@@ -185,8 +186,22 @@ func run(cfg *config.Config) error {
 		PruneOlder: cfg.Behaviors.PruneSourcesOlderThan,
 	})
 
+	// The Vault PKI enrollment manager and the holder the enrolled certificate is served
+	// from. Both exist whether or not the integration is ever configured: the management API
+	// drives the manager at run time, and an LDAPS listener without certificate paths waits
+	// on the holder from the moment it starts.
+	holder := &vaultpki.CertHolder{}
+	vault := vaultpki.NewManager(ctx, st,
+		vaultpki.KDC{Realm: cfg.Server.Realm, Addr: kdcClientAddress(cfg.KDC.Listen)},
+		holder, log)
+	services = append(services, service{"vaultpki", func(context.Context) error {
+		vault.Stop()
+
+		return nil
+	}})
+
 	if cfg.LDAP.Enabled || cfg.LDAPS.Enabled {
-		srv, err := startLDAP(ctx, cfg, domainSID, encTypes, limiter, st, log, m)
+		srv, err := startLDAP(ctx, cfg, domainSID, encTypes, limiter, st, log, m, holder)
 		if err != nil {
 			return err
 		}
@@ -294,6 +309,7 @@ func run(cfg *config.Config) error {
 			MinPasswordLength: cfg.KPasswd.MinPasswordLength,
 			DNSZones:          servedZones(cfg),
 			DNSDefaultTTL:     int(cfg.DNS.TTL / time.Second),
+			Vault:             vault,
 		}, st, log, m)
 		if err != nil {
 			return err
@@ -461,6 +477,17 @@ func servedZones(cfg *config.Config) []string {
 	return append(zones, cfg.DNS.ReverseZones...)
 }
 
+// kdcClientAddress is where the in-process KDC answers for a Kerberos client in this same
+// process — the Vault enrollment's login — whatever address the KDC is bound to.
+func kdcClientAddress(listen string) string {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil || len(port) == 0 {
+		return listen
+	}
+
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
 // listenPort extracts the port from a listen address, or zero when it has none.
 func listenPort(listen string) int {
 	_, port, err := net.SplitHostPort(listen)
@@ -486,6 +513,7 @@ func startLDAP(
 	st *store.Store,
 	log zerolog.Logger,
 	m *metrics.Metrics,
+	holder *vaultpki.CertHolder,
 ) (*ldapsrv.Server, error) {
 	var (
 		startTLS *tls.Config
@@ -499,7 +527,17 @@ func startLDAP(
 		}
 	}
 	if cfg.LDAPS.Enabled {
-		if ldapsTLS, err = tlsutil.Load(cfg.LDAPS.CertPath, cfg.LDAPS.KeyPath); err != nil {
+		if len(cfg.LDAPS.CertPath) == 0 {
+			// No certificate on disk: the listener comes up anyway and reads each handshake's
+			// certificate from the holder, which the Vault enrollment fills through the
+			// management API. Until the first enrollment, handshakes simply fail.
+			log.Info().Str("address", cfg.LDAPS.Listen).
+				Msg("LDAPS listener waiting for a certificate (vault enrollment)")
+			ldapsTLS = &tls.Config{
+				GetCertificate: holder.GetCertificate,
+				MinVersion:     tls.VersionTLS12,
+			}
+		} else if ldapsTLS, err = tlsutil.Load(cfg.LDAPS.CertPath, cfg.LDAPS.KeyPath); err != nil {
 			return nil, err
 		}
 	}

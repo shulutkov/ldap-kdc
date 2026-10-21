@@ -1,0 +1,49 @@
+# The directory the stand comes up with. This is a demo: the passwords in here are public by
+# construction, and the service will warn about the file being readable by others — that warning
+# is right for a production bootstrap plan and moot for a throwaway stand.
+groups:
+  - name: users
+    gid_number: 7000
+    capabilities:
+      - action: search
+        object: "*"
+  - name: svc
+    gid_number: 7001
+  - name: vault-users
+    gid_number: 7002
+  - name: vault-enroll
+    gid_number: 7003
+
+users:
+  # The demo account: a member of vault-users, so a Kerberos login to OpenBao maps it to the
+  # user-certs policy and it may pull certificates from the pki/issue/user endpoint.
+  - name: alice
+    primary_group: 7000
+    other_groups:
+      - 7002
+    given_name: Alice
+    sn: Example
+    password: alice demo password
+  # The account ldap-kdc itself logs in to OpenBao as, to enroll its LDAPS certificate. No
+  # password on purpose: the keys are random, live in the store, and never leave it.
+  - name: svc-vault-enroll
+    primary_group: 7001
+    other_groups:
+      - 7003
+  # The bind account OpenBao's kerberos auth method reads the directory through.
+  - name: svc-vault-ldap
+    primary_group: 7001
+    password: vault ldap bind password
+    capabilities:
+      - action: search
+        object: "*"
+
+principals:
+  # The service principal OpenBao's kerberos auth method expects tickets for; its keytab is
+  # handed over through the management API by setup.sh.
+  - name: HTTP/vault.example.com
+
+dns_records:
+  - name: vault.example.com
+    type: A
+    value: 10.99.0.20
