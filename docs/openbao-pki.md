@@ -74,8 +74,12 @@ service:
 5. **Signing.** `POST /v1/<pki_path>/sign/<role>` with the CSR and the requested TTL. The
    returned certificate (with the issuing CA appended) and the local key become the listener's
    `tls.Certificate`.
-6. **Renewal.** The loop sleeps until `not_after - renew_before` (halving the wait if it wakes
-   up still inside the renewal window, never less than 10 seconds), then enrolls again. The new
+6. **Renewal.** The loop sleeps until `not_after - renew_before`. If the PKI handed back less
+   lifetime than that — a role's `max_ttl` shorter than the requested `ttl` — the window is
+   already open, and the loop renews at two thirds of the lifetime actually granted instead, so
+   a short lifetime costs one issuance per two thirds of it rather than one every few seconds.
+   A warning is logged when this happens; the fix is on the PKI side, or a `ttl` the role allows.
+   The loop then enrolls again. The new
    certificate is swapped into an atomic holder; the listener's `tls.Config` reads it through
    `GetCertificate`, so ongoing and new handshakes pick it up with no restart.
 
@@ -105,7 +109,7 @@ suits the rig model where the harness sets everything up from scratch.
 
 ```json
 {
-  "address": "http://vault.example.com:8200",
+  "address": "https://vault.example.com:8200",
   "principal": "svc-vault-enroll",
   "service_principal": "HTTP/vault.example.com",
   "pki_path": "pki",
@@ -125,7 +129,8 @@ suits the rig model where the harness sets everything up from scratch.
 
 | Field               | Required | Default                  | Meaning                                                                                                  |
 |---------------------|----------|--------------------------|----------------------------------------------------------------------------------------------------------|
-| `address`           | yes      | —                        | OpenBao base URL; must be `http` or `https`. The host part also names the SPN unless overridden.         |
+| `address`           | yes      | —                        | OpenBao base URL; must be `https`, or `http` with `plaintext`. The host part also names the SPN unless overridden. |
+| `plaintext`         | no       | `false`                  | Allows an `http` address. The SPNEGO token and OpenBao's token then cross the network unencrypted; for test rigs only. |
 | `principal`         | yes      | —                        | Principal in this realm the login authenticates as. Must exist in the store, or the call fails with 400. |
 | `service_principal` | no       | `HTTP/<host of address>` | The principal OpenBao's kerberos auth expects a ticket for.                                              |
 | `pki_path`          | no       | `pki`                    | Mount of the PKI secrets engine.                                                                         |
@@ -171,7 +176,8 @@ Takes a certificate an external CA issued to the account and stores it:
 ```
 
 `201` with the stored metadata; `400` for unparseable PEM or a non-positive serial number;
-`404` for an unknown user; `409` when a certificate with the same serial is already stored.
+`404` for an unknown user; `409` when a certificate with the same serial from the same issuer is
+already stored.
 The service keeps no private keys and offers no issuance or revocation here — those are the
 CA's job; what it stores is public by nature.
 
@@ -192,6 +198,11 @@ Lists the account's imported certificates as metadata (no DER):
   ]
 }
 ```
+
+The issuer is the certificate's authority key identifier in lowercase hex, empty when the
+certificate carries none. Serial numbers are unique per issuer, not across the store: two
+authorities may both issue serial `2a`, and each certificate is named by its issuer and serial
+together.
 
 The serial is the lowercase hex form of the certificate's serial number, zero-padded to an
 even length. It is stored as text because an external CA's serial need not fit an integer —
@@ -312,8 +323,9 @@ the certificate carry the listener's IP address.
 ## Security notes
 
 - This is a testing rig. The compose stand's passwords, the SoftHSM PIN and the API token are
-  public by construction; the OpenBao listener is plain HTTP because nothing leaves the Docker
-  network.
+  public by construction. The OpenBao listener is plain HTTP, so the stand's enrollment sends
+  `"plaintext": true` explicitly; a production configuration uses an `https` address and never
+  sets it.
 - The enrollment principal and the Vault service principal both hold random keys that exist
   only in the store (and, for the latter, in the one keytab handed to OpenBao). Rotate either
   with `POST /api/v1/principals/{name}/password {"randomize": true}`; the previous key version
@@ -336,5 +348,5 @@ the certificate carry the listener's IP address.
 | `bao operator init` answers "not applicable to seal type pkcs11"              | You passed `-key-shares` to an auto-sealed server; use `-recovery-shares`.                                                                                          |
 | `/v1/sys/health` returns 501 before init regardless of query flags            | Known OpenBao 2.7 behavior — poll `/v1/sys/init` instead.                                                                                                           |
 | `kinit`/SPNEGO canonicalizes the Vault SPN to a container name                | Docker's embedded DNS answered the PTR query itself. Point the container's resolver at ldap-kdc (the e2e rig bind-mounts its own `resolv.conf`; see `docs/e2e.md`). |
-| Import answers 409 on a fresh certificate                                     | Serial collision — the serial is unique per stored certificate; delete the old entry first.                                                                         |
+| Import answers 409 on a fresh certificate                                     | Serial collision — the serial is unique per issuer; the same serial from the same issuer is already stored. Delete the old entry first.                             |
 | The certificate is imported but absent from LDAP                              | It is outside its validity window; only in-window certificates are published.                                                                                       |

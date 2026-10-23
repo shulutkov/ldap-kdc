@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"net/http"
 	"time"
@@ -30,6 +31,10 @@ type certificateImportReq struct {
 // certificate itself is served by the directory, and a listing of metadata is all managing the
 // records takes.
 type certificateBody struct {
+	// Issuer is the authority that issued the certificate, as its authority key identifier in
+	// hexadecimal. A certificate is named by this with its serial, since serials are only unique
+	// within one issuer.
+	Issuer string `json:"issuer"`
 	// Serial is hexadecimal, because an issuing authority's serial numbers do not fit into a
 	// JSON number: Vault issues 160-bit ones.
 	Serial    string    `json:"serial"`
@@ -55,7 +60,7 @@ func (s *Server) handleListUserCertificates(w http.ResponseWriter, r *http.Reque
 	body := certificatesBody{Certificates: make([]certificateBody, 0, len(certs))}
 	for _, c := range certs {
 		body.Certificates = append(body.Certificates, certificateBody{
-			Serial: c.Serial, Subject: c.Subject,
+			Issuer: c.Issuer, Serial: c.Serial, Subject: c.Subject,
 			NotBefore: c.NotBefore, NotAfter: c.NotAfter, CreatedAt: c.CreatedAt,
 		})
 	}
@@ -100,7 +105,10 @@ func (s *Server) handleImportUserCertificate(w http.ResponseWriter, r *http.Requ
 	// issuer assigned — as hexadecimal, an authority's serials being wider than any integer —
 	// the subject, and the validity window. Everything else a reader might want it can parse out
 	// of the DER itself.
+	// The issuer is the authority key identifier: the same for every certificate one authority
+	// signs, so serial numbers are checked for uniqueness within it and not across all of them.
 	c := &store.Certificate{
+		Issuer:    hex.EncodeToString(cert.AuthorityKeyId),
 		Serial:    cert.SerialNumber.Text(16),
 		Subject:   cert.Subject.String(),
 		DER:       cert.Raw,
@@ -114,9 +122,9 @@ func (s *Server) handleImportUserCertificate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.log.Info().Str("user", name).Str("serial", c.Serial).Msg("certificate imported")
+	s.log.Info().Str("user", name).Str("issuer", c.Issuer).Str("serial", c.Serial).Msg("certificate imported")
 	writeJSON(w, http.StatusCreated, certificateBody{
-		Serial: c.Serial, Subject: c.Subject,
+		Issuer: c.Issuer, Serial: c.Serial, Subject: c.Subject,
 		NotBefore: c.NotBefore, NotAfter: c.NotAfter, CreatedAt: c.CreatedAt,
 	})
 }

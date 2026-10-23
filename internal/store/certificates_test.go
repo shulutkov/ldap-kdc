@@ -62,6 +62,28 @@ func TestCertificates(t *testing.T) {
 		t.Errorf("AddCertificate for a missing account = %v, want ErrNotFound", err)
 	}
 
+	// Serial numbers are unique per issuer: two authorities may both issue serial 2a, but one
+	// issuer may not issue it twice.
+	carol := &User{Name: "carol", UIDNumber: 10002, PrimaryGroup: 5000}
+	if err := s.CreateUser(ctx, carol); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	for _, issuer := range []string{"aa", "bb"} {
+		c := &Certificate{Issuer: issuer, Serial: "2a", Subject: "CN=carol", DER: []byte(issuer),
+			NotBefore: now, NotAfter: now.Add(time.Hour)}
+		if err := s.AddCertificate(ctx, "carol", c); err != nil {
+			t.Fatalf("AddCertificate from issuer %s: %v", issuer, err)
+		}
+	}
+	again := &Certificate{Issuer: "AA", Serial: "2a", Subject: "CN=carol", DER: []byte("again"),
+		NotBefore: now, NotAfter: now.Add(time.Hour)}
+	if err := s.AddCertificate(ctx, "carol", again); !errors.Is(err, ErrConflict) {
+		t.Errorf("same serial from the same issuer = %v, want ErrConflict", err)
+	}
+	if got, err := s.GetCertificate(ctx, "carol", "BB", "2a"); err != nil || string(got.DER) != "bb" {
+		t.Errorf("GetCertificate by issuer = %v (%v), want issuer bb's certificate", got, err)
+	}
+
 	second := &Certificate{
 		Serial:    "2b",
 		Subject:   "CN=alice,O=Example",
@@ -126,23 +148,38 @@ func TestCertificates(t *testing.T) {
 		t.Errorf("bob's certificate reads back as %q", byID[other.ID][0].UserName)
 	}
 
+	// More accounts than one batch names, with the account at the end and listed twice: its
+	// certificates still come back once each.
+	many := make([]int64, 0, 1201)
+	for i := int64(0); i < 1200; i++ {
+		many = append(many, 100000+i)
+	}
+	many = append(many, u.ID, u.ID)
+	wideBatch, err := s.UserCertificates(ctx, many)
+	if err != nil {
+		t.Fatalf("UserCertificates across batches: %v", err)
+	}
+	if len(wideBatch[u.ID]) != 3 {
+		t.Errorf("alice across batches has %d certificates, want 3", len(wideBatch[u.ID]))
+	}
+
 	// A lookup normalizes its serial too, so the spelling the caller has need not be the
 	// spelling that was stored.
-	got, err := s.GetCertificate(ctx, "alice", "2B")
+	got, err := s.GetCertificate(ctx, "alice", "", "2B")
 	if err != nil {
 		t.Fatalf("GetCertificate: %v", err)
 	}
 	if string(got.DER) != "a second certificate" {
 		t.Errorf("GetCertificate DER = %q", got.DER)
 	}
-	if _, err := s.GetCertificate(ctx, "alice", "99"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.GetCertificate(ctx, "alice", "", "99"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetCertificate of a missing serial = %v, want ErrNotFound", err)
 	}
 
-	if err := s.DeleteCertificate(ctx, "alice", "2a"); err != nil {
+	if err := s.DeleteCertificate(ctx, "alice", "", "2a"); err != nil {
 		t.Fatalf("DeleteCertificate: %v", err)
 	}
-	if err := s.DeleteCertificate(ctx, "alice", "2a"); !errors.Is(err, ErrNotFound) {
+	if err := s.DeleteCertificate(ctx, "alice", "", "2a"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleting again = %v, want ErrNotFound", err)
 	}
 	if list, err := s.ListUserCertificates(ctx, "alice"); err != nil || len(list) != 2 {

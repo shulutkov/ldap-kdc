@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,10 @@ const minRenewDelay = 10 * time.Second
 type Config struct {
 	// Address is the Vault base URL, e.g. "https://vault.example.com:8200".
 	Address string
+	// Plaintext allows an http:// address. Off by default: the SPNEGO token and the Vault token
+	// the login returns both cross the wire in headers, and over plain HTTP anyone on the path
+	// can take them. It exists for test rigs whose Vault has no listener certificate.
+	Plaintext bool
 	// Principal is the principal in this realm the Vault login authenticates as.
 	Principal string
 	// ServicePrincipal is the principal Vault's kerberos auth expects a ticket for.
@@ -148,6 +153,11 @@ type Manager struct {
 	tokenSource TokenSource
 	httpClient  *http.Client
 
+	// lifecycle serializes Configure and Stop. Each stops the running loop before it starts or
+	// records anything, so two management requests arriving together cannot each start a loop
+	// and leave one of them running with nothing able to cancel it.
+	lifecycle sync.Mutex
+
 	mu       sync.Mutex
 	cfg      *Config
 	cancel   context.CancelFunc
@@ -199,6 +209,9 @@ func NewManager(parent context.Context, st *store.Store, kdc KDC, holder *CertHo
 func (m *Manager) Configure(cfg Config) {
 	cfg.defaults()
 
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+
 	m.stopLoop()
 
 	m.mu.Lock()
@@ -222,10 +235,18 @@ func (m *Manager) Configure(cfg Config) {
 // the holder keeps being served; there is no reason a reconfiguration should break the
 // connections the last certificate still answers.
 func (m *Manager) Stop() {
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+
 	m.stopLoop()
 
+	// What was enrolled belongs to the configuration just forgotten, so the status forgets it
+	// too; the attempt count is history and stays.
 	m.mu.Lock()
 	m.cfg = nil
+	m.enrolled = false
+	m.notAfter = time.Time{}
+	m.lastErr = ""
 	m.mu.Unlock()
 }
 
@@ -291,6 +312,14 @@ func (m *Manager) run(ctx context.Context, cfg Config, done chan struct{}) {
 			m.holder.Set(cert)
 			m.log.Info().Time("notAfter", cert.Leaf.NotAfter).Dur("renewIn", wait).
 				Msg("vault pki certificate enrolled")
+
+			// The issuer may hand back less lifetime than was asked for, a role's max_ttl say.
+			// The renewal then comes earlier than renew_before, which is worth an operator's
+			// attention: the requested ttl is not the one in force.
+			if time.Until(cert.Leaf.NotAfter) < cfg.RenewBefore {
+				m.log.Warn().Time("notAfter", cert.Leaf.NotAfter).Dur("renewBefore", cfg.RenewBefore).
+					Msg("vault pki issued less lifetime than renew_before; renewing earlier")
+			}
 		}
 
 		select {
@@ -301,15 +330,66 @@ func (m *Manager) run(ctx context.Context, cfg Config, done chan struct{}) {
 	}
 }
 
-// renewDelay is how long the loop sleeps after a successful enrollment: until the renewal
-// window opens, or a small floor when the certificate is already inside it.
+// renewDelay is how long the loop sleeps after a successful enrollment. Normally that is until
+// the renewal window opens. When the issuer gave a lifetime shorter than the window, the window
+// is already open, and renewing at once would issue a certificate every few seconds for as long
+// as the issuer keeps shortening it. So the renewal then comes at two thirds of the lifetime
+// actually granted, which ties the rate of issuance to the lifetime rather than to a floor.
 func renewDelay(notAfter time.Time, renewBefore time.Duration, now time.Time) time.Duration {
-	d := notAfter.Add(-renewBefore).Sub(now)
-	if d < minRenewDelay {
-		return minRenewDelay
+	remaining := notAfter.Sub(now)
+
+	if d := remaining - renewBefore; d >= minRenewDelay {
+		return d
+	}
+	if d := remaining * 2 / 3; d >= minRenewDelay {
+		return d
 	}
 
-	return d
+	return minRenewDelay
+}
+
+// CheckAddress insists on an http(s) URL with a host, and on https unless the configuration
+// allows plaintext.
+func CheckAddress(cfg Config) error {
+	u, err := url.Parse(cfg.Address)
+	if err != nil || len(u.Host) == 0 {
+		return fmt.Errorf("address %q is not a URL with a host", cfg.Address)
+	}
+
+	switch {
+	case u.Scheme == "https":
+		return nil
+	case u.Scheme == "http" && cfg.Plaintext:
+		return nil
+	case u.Scheme == "http":
+		return fmt.Errorf("address %q is plain http; set plaintext to allow it", cfg.Address)
+	default:
+		return fmt.Errorf("address %q must be an https URL", cfg.Address)
+	}
+}
+
+// loginToken gets the SPNEGO token from the token source and gives up when ctx does. The
+// Kerberos client takes no context of its own, so a KDC that does not answer would otherwise
+// hold the loop, and with it a management request waiting for the loop to leave, indefinitely.
+// The abandoned call finishes by itself, when the client's own network timeout runs out.
+func (m *Manager) loginToken(ctx context.Context, cfg Config) ([]byte, error) {
+	type result struct {
+		token []byte
+		err   error
+	}
+
+	ch := make(chan result, 1)
+	go func() {
+		token, err := m.tokenSource(ctx, cfg)
+		ch <- result{token, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.token, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Enroll performs one enrollment: Kerberos login to Vault, a fresh key and CSR, the PKI's
@@ -317,7 +397,11 @@ func renewDelay(notAfter time.Time, renewBefore time.Duration, now time.Time) ti
 func (m *Manager) Enroll(ctx context.Context, cfg Config) (*tls.Certificate, error) {
 	cfg.defaults()
 
-	token, err := m.tokenSource(ctx, cfg)
+	if err := CheckAddress(cfg); err != nil {
+		return nil, err
+	}
+
+	token, err := m.loginToken(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("kerberos login token: %w", err)
 	}

@@ -7,15 +7,21 @@
 -- external authority's serials (Vault issues 160-bit ones) do not fit into an integer. There is
 -- no revocation: this service runs no authority of its own, so a certificate that should no
 -- longer be honored is deleted while its issuer answers for the revocation.
+--
+-- A serial is unique per issuer, not per table: two authorities are free to issue the same
+-- serial number. The issuer is the certificate's authority key identifier as hexadecimal, empty
+-- when the certificate carries none.
 CREATE TABLE user_certificates (
     id         INTEGER PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    serial     TEXT    NOT NULL UNIQUE,
+    issuer     TEXT    NOT NULL,
+    serial     TEXT    NOT NULL,
     subject    TEXT    NOT NULL,
     der        BLOB    NOT NULL,
     not_before INTEGER NOT NULL,
     not_after  INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    UNIQUE (issuer, serial)
 ) STRICT;
 
 CREATE INDEX user_certificates_user_idx ON user_certificates (user_id);

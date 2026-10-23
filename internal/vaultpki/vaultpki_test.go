@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,12 @@ type fakeVault struct {
 
 	loginStatus int
 	signStatus  int
+
+	// lifetime is how long the issued certificates last; zero means 72 hours. A PKI whose role
+	// caps the lifetime is what a short one stands for.
+	lifetime time.Duration
+	// signs counts the CSRs the fake signed.
+	signs atomic.Int32
 
 	srv *httptest.Server
 }
@@ -79,7 +86,7 @@ func newFakeVault(t *testing.T) *fakeVault {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/auth/kerberos/login", v.handleLogin)
 	mux.HandleFunc("POST /v1/pki/sign/ldaps", v.handleSign)
-	v.srv = httptest.NewServer(mux)
+	v.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(v.srv.Close)
 
 	return v
@@ -107,6 +114,7 @@ func (v *fakeVault) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (v *fakeVault) handleSign(w http.ResponseWriter, r *http.Request) {
+	v.signs.Add(1)
 	v.xToken.Store(r.Header.Get("X-Vault-Token"))
 
 	if v.signStatus != 0 {
@@ -148,13 +156,18 @@ func (v *fakeVault) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	life := v.lifetime
+	if life == 0 {
+		life = 72 * time.Hour
+	}
+
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      csr.Subject,
 		DNSNames:     csr.DNSNames,
 		IPAddresses:  csr.IPAddresses,
 		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(72 * time.Hour),
+		NotAfter:     time.Now().Add(life),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -182,11 +195,12 @@ func (v *fakeVault) writeErrors(w http.ResponseWriter, status int, msgs ...strin
 }
 
 // testManager builds a Manager whose Kerberos login is replaced by a stub, so enrollment
-// runs against the fake Vault alone.
-func testManager(t *testing.T, tokenSeen *atomic.Value) *Manager {
+// runs against the fake Vault alone, over the TLS the fake Vault serves.
+func testManager(t *testing.T, vault *fakeVault, tokenSeen *atomic.Value) *Manager {
 	t.Helper()
 
 	return NewManager(context.Background(), nil, KDC{}, &CertHolder{}, zerolog.New(io.Discard),
+		WithHTTPClient(vault.srv.Client()),
 		WithTokenSource(func(_ context.Context, cfg Config) ([]byte, error) {
 			if tokenSeen != nil {
 				tokenSeen.Store(cfg.Principal)
@@ -214,7 +228,7 @@ func TestEnroll(t *testing.T) {
 	vault := newFakeVault(t)
 
 	var tokenSeen atomic.Value
-	m := testManager(t, &tokenSeen)
+	m := testManager(t, vault, &tokenSeen)
 
 	cert, err := m.Enroll(context.Background(), Config{
 		Address:    vault.srv.URL + "/",
@@ -274,7 +288,7 @@ func TestEnroll(t *testing.T) {
 
 func TestEnrollPropagatesVaultErrors(t *testing.T) {
 	vault := newFakeVault(t)
-	m := testManager(t, nil)
+	m := testManager(t, vault, nil)
 
 	vault.loginStatus = http.StatusForbidden
 	if _, err := m.Enroll(context.Background(), Config{Address: vault.srv.URL, Role: "ldaps"}); err == nil ||
@@ -306,9 +320,168 @@ func TestRenewDelay(t *testing.T) {
 		t.Errorf("renewDelay = %v, want 29 days", d)
 	}
 
-	// One already inside its renewal window is retried at the floor instead of spinning.
-	if d := renewDelay(now.Add(time.Hour), 24*time.Hour, now); d != minRenewDelay {
-		t.Errorf("renewDelay inside the window = %v, want %v", d, minRenewDelay)
+	// A lifetime shorter than the renewal margin, which the issuer may hand back, renews at two
+	// thirds of what it granted: a day's certificate is replaced after 16 hours.
+	if d := renewDelay(now.Add(24*time.Hour), 24*time.Hour, now); d != 16*time.Hour {
+		t.Errorf("renewDelay for a 24h lifetime = %v, want 16h", d)
+	}
+	if d := renewDelay(now.Add(time.Hour), 24*time.Hour, now); d != 40*time.Minute {
+		t.Errorf("renewDelay for a 1h lifetime = %v, want 40m", d)
+	}
+
+	// Below the floor the loop still waits the floor rather than spinning.
+	if d := renewDelay(now.Add(5*time.Second), 24*time.Hour, now); d != minRenewDelay {
+		t.Errorf("renewDelay for a 5s lifetime = %v, want %v", d, minRenewDelay)
+	}
+}
+
+// TestShortLifetimeDoesNotSpin checks, end to end through the loop, that a lifetime shorter than
+// the renewal margin is not renewed at once: the next signing waits for the scheduled renewal.
+// The schedule itself is pinned in TestRenewDelay, which is where a spin would show.
+func TestShortLifetimeDoesNotSpin(t *testing.T) {
+	vault := newFakeVault(t)
+	vault.lifetime = time.Hour
+
+	m := testManager(t, vault, nil)
+	t.Cleanup(m.Stop)
+
+	m.Configure(Config{
+		Address:     vault.srv.URL,
+		Principal:   "svc-vault",
+		Role:        "ldaps",
+		CommonName:  "kdc.example.com",
+		RenewBefore: 24 * time.Hour,
+	})
+
+	waitFor(t, "enrollment", func() bool { return m.Status().Enrolled })
+	time.Sleep(200 * time.Millisecond)
+
+	if n := vault.signs.Load(); n != 1 {
+		t.Errorf("certificates signed = %d, want 1: the renewal is due after 40 minutes", n)
+	}
+}
+
+func TestCheckAddress(t *testing.T) {
+	for _, tc := range []struct {
+		addr      string
+		plaintext bool
+		ok        bool
+	}{
+		{"https://vault.example.com:8200", false, true},
+		{"http://vault.example.com:8200", false, false},
+		{"http://vault.example.com:8200", true, true},
+		{"ftp://vault.example.com", true, false},
+		{"https://", false, false},
+		{"not a url", false, false},
+	} {
+		err := CheckAddress(Config{Address: tc.addr, Plaintext: tc.plaintext})
+		if (err == nil) != tc.ok {
+			t.Errorf("CheckAddress(%q, plaintext=%v) = %v, want ok=%v", tc.addr, tc.plaintext, err, tc.ok)
+		}
+	}
+}
+
+func TestEnrollRefusesPlaintextByDefault(t *testing.T) {
+	vault := newFakeVault(t)
+	m := NewManager(context.Background(), nil, KDC{}, &CertHolder{}, zerolog.New(io.Discard),
+		WithTokenSource(func(context.Context, Config) ([]byte, error) {
+			t.Error("the token source was asked for a token before the address was checked")
+
+			return nil, nil
+		}))
+
+	plain := strings.Replace(vault.srv.URL, "https://", "http://", 1)
+	if _, err := m.Enroll(context.Background(), Config{Address: plain, Role: "ldaps"}); err == nil ||
+		!strings.Contains(err.Error(), "plaintext") {
+		t.Errorf("Enroll over plain http = %v, want a refusal naming plaintext", err)
+	}
+	if vault.signs.Load() != 0 {
+		t.Error("a refused enrollment still reached the PKI")
+	}
+}
+
+// TestManagerConfigureConcurrently covers management requests reconfiguring at once: no loop may
+// be left behind that Stop cannot reach, so after Stop the attempts stop moving.
+func TestManagerConfigureConcurrently(t *testing.T) {
+	vault := newFakeVault(t)
+
+	m := testManager(t, vault, nil)
+	cfg := Config{
+		Address:       vault.srv.URL,
+		Principal:     "svc-vault",
+		Role:          "ldaps",
+		CommonName:    "kdc.example.com",
+		RetryInterval: time.Millisecond,
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.Configure(cfg)
+		}()
+	}
+	wg.Wait()
+
+	m.Stop()
+
+	// With no loop left, the attempt count stops moving; an orphaned loop would keep enrolling.
+	before := m.Status().Attempts
+	time.Sleep(100 * time.Millisecond)
+	if after := m.Status().Attempts; after != before {
+		t.Errorf("attempts moved from %d to %d after Stop: a loop survived", before, after)
+	}
+}
+
+func TestStopForgetsEnrollment(t *testing.T) {
+	vault := newFakeVault(t)
+	m := testManager(t, vault, nil)
+
+	m.Configure(Config{
+		Address:    vault.srv.URL,
+		Principal:  "svc-vault",
+		Role:       "ldaps",
+		CommonName: "kdc.example.com",
+	})
+	waitFor(t, "enrollment", func() bool { return m.Status().Enrolled })
+
+	m.Stop()
+
+	st := m.Status()
+	if st.Configured || st.Enrolled || !st.NotAfter.IsZero() || len(st.LastError) != 0 {
+		t.Errorf("status after Stop = %+v, want nothing enrolled or configured", st)
+	}
+	if st.Attempts == 0 {
+		t.Error("attempts were forgotten by Stop; they are history and should stay")
+	}
+}
+
+// TestKerberosLoginHonoursContext: a KDC that never answers must not hold the enrollment past
+// its context.
+func TestKerberosLoginHonoursContext(t *testing.T) {
+	vault := newFakeVault(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	m := NewManager(context.Background(), nil, KDC{}, &CertHolder{}, zerolog.New(io.Discard),
+		WithHTTPClient(vault.srv.Client()),
+		WithTokenSource(func(context.Context, Config) ([]byte, error) {
+			<-release
+
+			return []byte("never"), nil
+		}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.Enroll(ctx, Config{Address: vault.srv.URL, Role: "ldaps"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Enroll with a hung KDC = %v, want the context's deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Enroll took %v to give up on its context", elapsed)
 	}
 }
 
@@ -317,6 +490,7 @@ func TestManagerConfigureStatusStop(t *testing.T) {
 
 	holder := &CertHolder{}
 	m := NewManager(context.Background(), nil, KDC{}, holder, zerolog.New(io.Discard),
+		WithHTTPClient(vault.srv.Client()),
 		WithTokenSource(func(context.Context, Config) ([]byte, error) { return []byte("x"), nil }))
 	t.Cleanup(m.Stop)
 
@@ -357,6 +531,7 @@ func TestManagerReconfiguresWithoutRacing(t *testing.T) {
 	vault := newFakeVault(t)
 
 	m := NewManager(context.Background(), nil, KDC{}, &CertHolder{}, zerolog.New(io.Discard),
+		WithHTTPClient(vault.srv.Client()),
 		WithTokenSource(func(context.Context, Config) ([]byte, error) { return []byte("x"), nil }))
 
 	// Configuring while a loop runs must stop the old loop before the new one starts; with
@@ -404,7 +579,7 @@ func TestManagerRecordsFailures(t *testing.T) {
 	t.Cleanup(m.Stop)
 
 	m.Configure(Config{
-		Address:       "http://127.0.0.1:1",
+		Address:       "https://127.0.0.1:1",
 		Principal:     "svc-vault",
 		Role:          "ldaps",
 		CommonName:    "kdc.example.com",
@@ -466,7 +641,7 @@ func TestCertHolderHandshake(t *testing.T) {
 	}
 
 	vault := newFakeVault(t)
-	m := testManager(t, nil)
+	m := testManager(t, vault, nil)
 
 	cert, err := m.Enroll(context.Background(), Config{
 		Address:    vault.srv.URL,

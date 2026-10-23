@@ -13,6 +13,10 @@ import (
 type Certificate struct {
 	ID       int64  `json:"id"`
 	UserName string `json:"userName"`
+	// Issuer identifies the authority that issued the certificate: its authority key identifier
+	// as lowercase hexadecimal, empty when the certificate carries none. Serial numbers are only
+	// unique within one issuer, so the pair is what names a certificate.
+	Issuer string `json:"issuer"`
 	// Serial is the certificate's serial number as lowercase hexadecimal padded to an even
 	// number of digits. It is text rather than an integer because an external authority's
 	// serials do not fit into one: Vault, for one, issues 160-bit serial numbers.
@@ -38,10 +42,11 @@ func normalizeSerial(serial string) string {
 }
 
 // AddCertificate stores an imported certificate. The serial is normalized on the way in, and
-// its uniqueness is the database's to enforce: the same certificate imported twice is a
-// conflict, not a second row.
+// its uniqueness within the issuer is the database's to enforce: the same certificate imported
+// twice is a conflict, not a second row.
 func (s *Store) AddCertificate(ctx context.Context, userName string, c *Certificate) error {
 	c.Serial = normalizeSerial(c.Serial)
+	c.Issuer = strings.ToLower(c.Issuer)
 
 	return s.write(ctx, func(tx *sql.Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
@@ -52,9 +57,9 @@ func (s *Store) AddCertificate(ctx context.Context, userName string, c *Certific
 		now := time.Now().UTC()
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO user_certificates
-				(user_id, serial, subject, der, not_before, not_after, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			u.ID, c.Serial, c.Subject, c.DER, c.NotBefore.Unix(), c.NotAfter.Unix(), now.Unix())
+				(user_id, issuer, serial, subject, der, not_before, not_after, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			u.ID, c.Issuer, c.Serial, c.Subject, c.DER, c.NotBefore.Unix(), c.NotAfter.Unix(), now.Unix())
 		if err != nil {
 			return err
 		}
@@ -73,7 +78,8 @@ func (s *Store) AddCertificate(ctx context.Context, userName string, c *Certific
 }
 
 const certificateSelect = `
-	SELECT uc.id, u.name, uc.serial, uc.subject, uc.der, uc.not_before, uc.not_after, uc.created_at
+	SELECT uc.id, u.name, uc.issuer, uc.serial, uc.subject, uc.der, uc.not_before, uc.not_after,
+	       uc.created_at
 	FROM user_certificates uc JOIN users u ON u.id = uc.user_id`
 
 func (s *Store) listCertificates(ctx context.Context, q querier, where string, args ...any) ([]Certificate, error) {
@@ -103,7 +109,7 @@ func scanCertificate(sc scanner) (*Certificate, error) {
 		created  int64
 	)
 	if err := sc.Scan(
-		&c.ID, &c.UserName, &c.Serial, &c.Subject, &c.DER, &notBefor, &notAftr, &created,
+		&c.ID, &c.UserName, &c.Issuer, &c.Serial, &c.Subject, &c.DER, &notBefor, &notAftr, &created,
 	); err != nil {
 		return nil, err
 	}
@@ -129,25 +135,44 @@ func (s *Store) ListUserCertificates(ctx context.Context, userName string) ([]Ce
 	return out, err
 }
 
-// UserCertificates returns the certificates of every named account in one query. The caller asks
-// for accounts by id; the answer is grouped by the same ids so a caller holding users it has
-// already read need not re-read them.
+// certificateBatch bounds how many accounts one query names. SQLite caps the parameters a
+// statement may bind, and a directory with more accounts than that must still be read.
+const certificateBatch = 500
+
+// UserCertificates returns the certificates of the named accounts, grouped by the same ids the
+// caller asked with, so a caller holding users it has already read need not re-read them. The
+// ids are read in batches; a directory search over every account is one query per batch rather
+// than one per account.
 func (s *Store) UserCertificates(ctx context.Context, userIDs []int64) (map[int64][]Certificate, error) {
 	out := make(map[int64][]Certificate, len(userIDs))
-	if len(userIDs) == 0 {
-		return out, nil
+
+	seen := make(map[int64]bool, len(userIDs))
+	ids := make([]int64, 0, len(userIDs))
+	for _, id := range userIDs {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
 	}
 
-	ph := placeholders(len(userIDs))
-	args := toAnySlice(userIDs)
+	for start := 0; start < len(ids); start += certificateBatch {
+		if err := s.userCertificatesBatch(ctx, out, ids[start:min(start+certificateBatch, len(ids))]); err != nil {
+			return nil, err
+		}
+	}
 
+	return out, nil
+}
+
+// userCertificatesBatch adds the certificates of one batch of accounts to out.
+func (s *Store) userCertificatesBatch(ctx context.Context, out map[int64][]Certificate, ids []int64) error {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uc.user_id, uc.id, u.name, uc.serial, uc.subject, uc.der, uc.not_before,
+		SELECT uc.user_id, uc.id, u.name, uc.issuer, uc.serial, uc.subject, uc.der, uc.not_before,
 		       uc.not_after, uc.created_at
 		FROM user_certificates uc JOIN users u ON u.id = uc.user_id
-		WHERE uc.user_id IN (`+ph+`) ORDER BY uc.user_id, uc.id`, args...)
+		WHERE uc.user_id IN (`+placeholders(len(ids))+`) ORDER BY uc.user_id, uc.id`, toAnySlice(ids)...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -160,9 +185,9 @@ func (s *Store) UserCertificates(ctx context.Context, userIDs []int64) (map[int6
 			created int64
 		)
 		if err := rows.Scan(
-			&userID, &c.ID, &c.UserName, &c.Serial, &c.Subject, &c.DER, &notBef, &notAft, &created,
+			&userID, &c.ID, &c.UserName, &c.Issuer, &c.Serial, &c.Subject, &c.DER, &notBef, &notAft, &created,
 		); err != nil {
-			return nil, err
+			return err
 		}
 		c.NotBefore = time.Unix(notBef, 0).UTC()
 		c.NotAfter = time.Unix(notAft, 0).UTC()
@@ -170,17 +195,19 @@ func (s *Store) UserCertificates(ctx context.Context, userIDs []int64) (map[int6
 		out[userID] = append(out[userID], c)
 	}
 
-	return out, rows.Err()
+	return rows.Err()
 }
 
-// GetCertificate returns one of an account's certificates by serial.
-func (s *Store) GetCertificate(ctx context.Context, userName string, serial string) (*Certificate, error) {
+// GetCertificate returns one of an account's certificates, named by its issuer and serial.
+func (s *Store) GetCertificate(ctx context.Context, userName string, issuer string, serial string) (*Certificate, error) {
 	var out *Certificate
 
+	issuer = strings.ToLower(issuer)
 	serial = normalizeSerial(serial)
 
 	err := s.readUser(ctx, userName, func(tx *sql.Tx) error {
-		list, err := s.listCertificates(ctx, tx, ` WHERE u.name = ? AND uc.serial = ?`, userName, serial)
+		list, err := s.listCertificates(ctx, tx,
+			` WHERE u.name = ? AND uc.issuer = ? AND uc.serial = ?`, userName, issuer, serial)
 		if err != nil {
 			return err
 		}
@@ -195,10 +222,11 @@ func (s *Store) GetCertificate(ctx context.Context, userName string, serial stri
 	return out, err
 }
 
-// DeleteCertificate removes one of an account's certificates by serial. Removal rather than a
-// revocation stamp is enough here: the certificate came from an authority elsewhere, and that
-// authority's revocation list is where a still-valid certificate is called in.
-func (s *Store) DeleteCertificate(ctx context.Context, userName string, serial string) error {
+// DeleteCertificate removes one of an account's certificates, named by its issuer and serial.
+// Removal rather than a revocation stamp is enough here: the certificate came from an authority
+// elsewhere, and that authority's revocation list is where a still-valid certificate is called in.
+func (s *Store) DeleteCertificate(ctx context.Context, userName string, issuer string, serial string) error {
+	issuer = strings.ToLower(issuer)
 	serial = normalizeSerial(serial)
 
 	return s.write(ctx, func(tx *sql.Tx) error {
@@ -208,7 +236,8 @@ func (s *Store) DeleteCertificate(ctx context.Context, userName string, serial s
 		}
 
 		res, err := tx.ExecContext(ctx,
-			`DELETE FROM user_certificates WHERE user_id = ? AND serial = ?`, u.ID, serial)
+			`DELETE FROM user_certificates WHERE user_id = ? AND issuer = ? AND serial = ?`,
+			u.ID, issuer, serial)
 		if err != nil {
 			return err
 		}
@@ -226,13 +255,19 @@ func (s *Store) DeleteCertificate(ctx context.Context, userName string, serial s
 }
 
 // readUser runs fn inside a read that first proves the named account exists, so a missing account
-// is ErrNotFound rather than an empty answer that looks like success.
+// is ErrNotFound rather than an empty answer that looks like success. It is a plain read
+// transaction: it does not take the write lock, so reading certificates never queues behind a
+// write, and a write never queues behind a read of them.
 func (s *Store) readUser(ctx context.Context, userName string, fn func(tx *sql.Tx) error) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
-		if _, err := s.getUser(ctx, tx, `name = ?`, userName); err != nil {
-			return err
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
 
-		return fn(tx)
-	})
+	if _, err := s.getUser(ctx, tx, `name = ?`, userName); err != nil {
+		return err
+	}
+
+	return fn(tx)
 }

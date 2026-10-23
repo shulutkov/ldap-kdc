@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/shulutkov/ldap-kdc/internal/krbkeys"
@@ -20,7 +19,8 @@ import (
 // vaultConfigRequest is the integration as a management request describes it. Durations are
 // Go duration strings, as on the principal endpoints.
 type vaultConfigRequest struct {
-	Address       string   `json:"address" required:"true" description:"The Vault base URL, e.g. https://vault.example.com:8200."`
+	Address       string   `json:"address" required:"true" description:"The Vault base URL, e.g. https://vault.example.com:8200. Must be https unless plaintext is set."`
+	Plaintext     bool     `json:"plaintext,omitempty" description:"Allows an http address. The Kerberos token and Vault's token then travel unencrypted, so this is for test rigs only."`
 	Principal     string   `json:"principal" required:"true" description:"The principal in this realm the Vault login authenticates as. Its keys stay in the store; the enrollment reads them from there."`
 	ServiceSPN    string   `json:"service_principal,omitempty" description:"The principal Vault's kerberos auth expects a ticket for. Defaults to HTTP/<host of address>."`
 	PKIPath       string   `json:"pki_path,omitempty" description:"The mount of the PKI secrets engine. Defaults to pki."`
@@ -100,9 +100,8 @@ func (s *Server) handlePutVaultConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := url.Parse(req.Address)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || len(u.Host) == 0 {
-		writeError(w, http.StatusBadRequest, "address must be an http(s) URL")
+	if err := vaultpki.CheckAddress(vaultpki.Config{Address: req.Address, Plaintext: req.Plaintext}); err != nil {
+		writeError(w, http.StatusBadRequest, "%s", err)
 
 		return
 	}
@@ -172,6 +171,7 @@ func (s *Server) handlePutVaultConfig(w http.ResponseWriter, r *http.Request) {
 
 	m.Configure(vaultpki.Config{
 		Address:          req.Address,
+		Plaintext:        req.Plaintext,
 		Principal:        req.Principal,
 		ServicePrincipal: req.ServiceSPN,
 		PKIPath:          req.PKIPath,

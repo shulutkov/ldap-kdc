@@ -649,6 +649,7 @@ func (s *stand) setupVault(ctx context.Context) error {
 	// certificate against the ldaps role from here on, and renews it before expiry.
 	status, raw, err := s.apiRaw(ctx, "PUT", "/vault/config", map[string]any{
 		"address":        "http://" + vaultHost + ":8200",
+		"plaintext":      true, // the stand's OpenBao listens on plain HTTP; production uses https
 		"principal":      vaultEnroll,
 		"pki_path":       "pki",
 		"role":           "ldaps",
