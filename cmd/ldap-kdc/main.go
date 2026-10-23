@@ -44,6 +44,16 @@ var version = "dev"
 const shutdownTimeout = 15 * time.Second
 
 func main() {
+	// Subcommands run against the database and exit; they are not a second service.
+	if len(os.Args) > 1 && os.Args[1] == "ktadd" {
+		if err := runKtadd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ktadd:", err)
+			os.Exit(1)
+		}
+
+		return
+	}
+
 	var (
 		configPath  = flag.String("config", "ldap-kdc.yaml", "path to the configuration file")
 		checkConfig = flag.Bool("check-config", false, "validate the configuration and exit")

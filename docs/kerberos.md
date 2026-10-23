@@ -259,6 +259,22 @@ curl -s -o HTTP_www.example.com.keytab \
   -H "$AUTH" "$API/principals/HTTP/www.example.com/keytab"
 ```
 
+**ktadd.** `ldap-kdc ktadd` adds the keys of one or more principals to a keytab file, as MIT's
+`ktadd -k` does. It works on the database directly, like `kadmin.local`, so it runs where the
+service's data is — in the container or on the host, with the configuration and the master key in
+reach. The service may be running at the same time.
+
+```sh
+ldap-kdc ktadd -c ldap-kdc.yaml -k /etc/security/nn.keytab HTTP/nn.adh.local nn/nn.adh.local
+ldap-kdc ktadd -c ldap-kdc.yaml -k /etc/security/nn.keytab hdfs
+```
+
+The keytab is merged, not overwritten: an entry for the same principal, kvno and key type is
+replaced by the new one, and every other entry stays. A file that does not exist is created with
+mode 0600. Unlike MIT's `ktadd`, the principal keeps its keys by default, because a new key
+invalidates every keytab issued before it. Pass `-randkey` to give the principal new random keys
+first (MIT's default). A missing master key is an error: `ktadd` never creates one.
+
 Re-key a principal with `POST /api/v1/principals/{name}/password` and either
 `{"password": "..."}` or `{"randomize": true}`.
 

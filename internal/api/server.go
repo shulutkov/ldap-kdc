@@ -375,6 +375,17 @@ func (s *Server) apiRoutes() []route {
 			responses: []responseDoc{noContent("Removed."), badRequest, unauthorized, notFound, conflict},
 		}}},
 
+		{"POST /api/v1/keytab", s.handleKeytab, []operationDoc{{
+			tag: "principals", summary: "Keytab for several principals",
+			description: "One keytab file holding the current keys of every principal named, so a host's " +
+				"whole set of service keys comes down in one call. Set randkey to re-key them first.",
+			request: new(keytabRequest),
+			responses: []responseDoc{
+				{status: http.StatusOK, body: new(keytabFile), contentType: "application/octet-stream", description: "A keytab file."},
+				badRequest, unauthorized, notFound, conflict,
+			},
+		}}},
+
 		{"GET /api/v1/dns/records", s.handleListDNSRecords, []operationDoc{{
 			tag: "dns", summary: "List resource records", request: new(dnsRecordsQuery),
 			responses: []responseDoc{ok(new(dnsRecordsBody), "The records, and the zones this service answers for."), unauthorized},

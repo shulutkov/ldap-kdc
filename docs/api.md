@@ -448,6 +448,7 @@ be appended (`HTTP/host@OTHER.COM`), and without one the service realm applies.
 | DELETE | `/api/v1/principals/{name}`          | Remove it.                                                            |
 | POST   | `/api/v1/principals/{name}/password` | Re-key from a password or `{"randomize": true}`.                      |
 | GET    | `/api/v1/principals/{name}/keytab`   | Keytab for the current key version.                                   |
+| POST   | `/api/v1/keytab`                     | One keytab for several principals, optionally re-keying them first.   |
 
 ### Create: `POST /api/v1/principals` → `201`
 
@@ -566,6 +567,24 @@ produces the same keys as one set through the real name.
 An `application/octet-stream` keytab file holding the current key version, named
 `HTTP_www.example.com.keytab` (slashes replaced with underscores) in the
 `Content-Disposition` header. A principal with no keys answers `409`.
+
+### Keytab for several principals: `POST /api/v1/keytab` → `200`
+
+Takes the principals a keytab should hold and answers with one `application/octet-stream` file
+with the current keys of every one of them, in the order asked:
+
+```sh
+curl -s -X POST $API/keytab -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"principals": ["HTTP/nn.adh.local", "nn/nn.adh.local", "hdfs"]}' -o nn.keytab
+```
+
+A name may be an alias or carry `@REALM`; a principal named more than once is written once.
+Set `"randkey": true` to give every principal new random keys before the file is written, as MIT's
+`ktadd` does by default. Keytabs issued before then keep working until their kvno is gone.
+
+All names are resolved before anything is re-keyed, so an unknown name answers `404` and changes
+nothing. A principal with no keys answers `409`. At most 500 principals per request; more answers
+`400`.
 
 ### Delete: `DELETE /api/v1/principals/{name}` → `204`
 
