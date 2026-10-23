@@ -164,6 +164,17 @@ dns:
 
   ttl: 1h
 
+  # Register the containers of a Docker host in the zone: a container on one of these networks
+  # gets an A record under its name, which goes when the container stops. Entries are network
+  # names, or IPv4 CIDRs matched against container addresses. Required when this is on.
+  # docker:
+  #   enabled: true
+  #   endpoint: unix:///var/run/docker.sock
+  #   networks:
+  #     - app
+  #     - 10.1.0.0/16
+  #   resync_every: 1m
+
 api:
   enabled: true
   # Bind to loopback unless a token is set: this interface can change any account's password.

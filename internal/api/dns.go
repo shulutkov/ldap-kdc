@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,6 +93,14 @@ func (s *Server) handleDeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.st.DeleteDNSRecord(r.Context(), id); err != nil {
+		// The generic conflict text would hide why: this record is not an administrator's to remove.
+		if errors.Is(err, store.ErrConflict) {
+			writeError(w, http.StatusConflict,
+				"record %d is registered automatically and is removed by its source, not through the API", id)
+
+			return
+		}
+
 		writeStoreError(w, err)
 
 		return

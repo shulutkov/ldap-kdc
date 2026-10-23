@@ -698,6 +698,11 @@ served directly from the store by an authoritative server built on the same DNS 
 uses, and reverse answers are computed from the address records rather than stored, so there is
 nothing to synchronise and nothing that can drift. What FreeIPA has and this does not: DNSSEC
 signing, zone transfers to secondaries, per-server DNS locations, and dynamic updates from clients.
+The reverse is a divergence in the other direction: a Docker host's containers can be registered
+automatically, by the networks they are attached to, and removed when they stop. FreeIPA has no
+equivalent; its records come from its own clients and its own administrators. The registration is
+off by default and selects containers only by the networks it is given. See
+[docs/dns.md](docs/dns.md#container-registration).
 
 **Deliberately different.** The tree keeps glauth's layout -- `cn=user,ou=group,ou=users,$BASE` --
 rather than FreeIPA's `uid=user,cn=users,cn=accounts,$SUFFIX`, so existing glauth configuration

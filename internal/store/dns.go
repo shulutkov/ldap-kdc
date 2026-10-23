@@ -13,11 +13,16 @@ import (
 // DNSRecord is one resource record of the realm's zone. Value holds the record data in the
 // presentation form a zone file would use.
 type DNSRecord struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name" example:"www.example.com"`
-	Type      string    `json:"type" example:"A"`
-	TTL       int       `json:"ttl"`
-	Value     string    `json:"value" example:"192.0.2.10"`
+	ID   int64  `json:"id"`
+	Name string `json:"name" example:"www.example.com"`
+	Type string `json:"type" example:"A"`
+	TTL  int    `json:"ttl"`
+	// Value is the record data. For an address record it is the address.
+	Value string `json:"value" example:"192.0.2.10"`
+	// Origin says who put the record in the zone: empty for an administrator, "docker:<container
+	// id>" for a registration that follows a running container. An automatic record is removed by
+	// its origin, not by the API.
+	Origin    string    `json:"origin,omitempty" example:"docker:3f2a9c"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -27,7 +32,7 @@ func NormalizeDNSName(name string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }
 
-const dnsRecordSelect = `SELECT id, name, type, ttl, value, created_at, updated_at FROM dns_records`
+const dnsRecordSelect = `SELECT id, name, type, ttl, value, origin, created_at, updated_at FROM dns_records`
 
 func scanDNSRecord(sc scanner) (*DNSRecord, error) {
 	var (
@@ -35,7 +40,7 @@ func scanDNSRecord(sc scanner) (*DNSRecord, error) {
 		created, updated int64
 	)
 
-	if err := sc.Scan(&r.ID, &r.Name, &r.Type, &r.TTL, &r.Value, &created, &updated); err != nil {
+	if err := sc.Scan(&r.ID, &r.Name, &r.Type, &r.TTL, &r.Value, &r.Origin, &created, &updated); err != nil {
 		return nil, err
 	}
 
@@ -61,6 +66,19 @@ func (s *Store) ListDNSRecords(ctx context.Context) ([]DNSRecord, error) {
 func (s *Store) LookupDNSRecords(ctx context.Context, name string) ([]DNSRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
 		dnsRecordSelect+` WHERE name = ? ORDER BY type, value`, NormalizeDNSName(name))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return collectDNSRecords(rows)
+}
+
+// ListDiscoveredDNSRecords returns the records a source registered automatically, such as
+// "docker", ordered by name. An administrator's records are never among them.
+func (s *Store) ListDiscoveredDNSRecords(ctx context.Context, source string) ([]DNSRecord, error) {
+	rows, err := s.db.QueryContext(ctx,
+		dnsRecordSelect+` WHERE origin LIKE ? ORDER BY name, type, value`, source+":%")
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +117,8 @@ func (s *Store) LookupDNSAddressNames(ctx context.Context, addr netip.Addr) ([]s
 	return out, rows.Err()
 }
 
-// CreateDNSRecord adds a record.
-func (s *Store) CreateDNSRecord(ctx context.Context, r *DNSRecord) error {
+// validateDNSRecord checks what every record needs, whoever it is from.
+func validateDNSRecord(r *DNSRecord) error {
 	r.Name = NormalizeDNSName(r.Name)
 	r.Type = strings.ToUpper(strings.TrimSpace(r.Type))
 	r.Value = strings.TrimSpace(r.Value)
@@ -116,13 +134,41 @@ func (s *Store) CreateDNSRecord(ctx context.Context, r *DNSRecord) error {
 		return errors.New("record ttl must be positive")
 	}
 
+	return nil
+}
+
+// CreateDNSRecord adds a record an administrator made. Its origin is empty whatever the caller set:
+// an automatic record can only come from the source that owns it, so the API cannot mint one.
+func (s *Store) CreateDNSRecord(ctx context.Context, r *DNSRecord) error {
+	if err := validateDNSRecord(r); err != nil {
+		return err
+	}
+
+	return s.insertDNSRecord(ctx, r, "")
+}
+
+// CreateDiscoveredDNSRecord adds a record a source registered automatically, tagged with the origin
+// that owns it. The origin is what removes it again, so it must be given.
+func (s *Store) CreateDiscoveredDNSRecord(ctx context.Context, origin string, r *DNSRecord) error {
+	if len(origin) == 0 {
+		return errors.New("a discovered record needs an origin")
+	}
+	if err := validateDNSRecord(r); err != nil {
+		return err
+	}
+
+	return s.insertDNSRecord(ctx, r, origin)
+}
+
+func (s *Store) insertDNSRecord(ctx context.Context, r *DNSRecord, origin string) error {
 	now := time.Now().UTC()
+	r.Origin = origin
 
 	return s.write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO dns_records (name, type, ttl, value, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			r.Name, r.Type, r.TTL, r.Value, now.Unix(), now.Unix())
+			INSERT INTO dns_records (name, type, ttl, value, origin, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.Name, r.Type, r.TTL, r.Value, origin, now.Unix(), now.Unix())
 		if err != nil {
 			return err
 		}
@@ -134,36 +180,78 @@ func (s *Store) CreateDNSRecord(ctx context.Context, r *DNSRecord) error {
 		r.CreatedAt = now
 		r.UpdatedAt = now
 
-		return nil
+		return bumpZoneSerial(ctx, tx)
 	})
 }
 
-// DeleteDNSRecord removes one record by id.
+// DeleteDNSRecord removes one administrator's record by id. A registered record is refused with
+// ErrConflict: it belongs to the source that registered it, and goes when that does.
 func (s *Store) DeleteDNSRecord(ctx context.Context, id int64) error {
 	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM dns_records WHERE id = ?`, id)
-		if err != nil {
-			return err
-		}
+		var origin string
 
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
+		err := tx.QueryRowContext(ctx, `SELECT origin FROM dns_records WHERE id = ?`, id).Scan(&origin)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
+		if err != nil {
+			return err
+		}
 
-		return nil
+		if len(origin) > 0 {
+			return fmt.Errorf("%w: record %d is registered by %s and is removed when that is", ErrConflict, id, origin)
+		}
+
+		return deleteDNSRecordTx(ctx, tx, id)
 	})
 }
 
-// DeleteDNSRecordsAt removes every record at a name, optionally of one type only.
+// DeleteDiscoveredDNSRecord removes a record a source registered, once that source no longer
+// stands behind it. An administrator's record is refused.
+func (s *Store) DeleteDiscoveredDNSRecord(ctx context.Context, id int64) error {
+	return s.write(ctx, func(tx *sql.Tx) error {
+		var origin string
+
+		err := tx.QueryRowContext(ctx, `SELECT origin FROM dns_records WHERE id = ?`, id).Scan(&origin)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		if len(origin) == 0 {
+			return fmt.Errorf("%w: record %d is an administrator's, not a registration", ErrConflict, id)
+		}
+
+		return deleteDNSRecordTx(ctx, tx, id)
+	})
+}
+
+func deleteDNSRecordTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	res, err := tx.ExecContext(ctx, `DELETE FROM dns_records WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+
+	return bumpZoneSerial(ctx, tx)
+}
+
+// DeleteDNSRecordsAt removes every administrator's record at a name, optionally of one type only.
+// Registered records at the name are left where they are.
 func (s *Store) DeleteDNSRecordsAt(ctx context.Context, name, recordType string) (int64, error) {
 	var removed int64
 
 	err := s.write(ctx, func(tx *sql.Tx) error {
-		query := `DELETE FROM dns_records WHERE name = ?`
+		query := `DELETE FROM dns_records WHERE name = ? AND origin = ''`
 		args := []any{NormalizeDNSName(name)}
 
 		if len(recordType) > 0 {
@@ -183,7 +271,7 @@ func (s *Store) DeleteDNSRecordsAt(ctx context.Context, name, recordType string)
 			return fmt.Errorf("%w: no records at %s", ErrNotFound, name)
 		}
 
-		return nil
+		return bumpZoneSerial(ctx, tx)
 	})
 
 	return removed, err
@@ -203,19 +291,24 @@ func collectDNSRecords(rows *sql.Rows) ([]DNSRecord, error) {
 	return out, rows.Err()
 }
 
-// LatestDNSChange reports when the zone last changed, which becomes the SOA serial. A secondary
-// comparing serials then sees the zone move exactly when its contents do.
-func (s *Store) LatestDNSChange(ctx context.Context) (time.Time, error) {
-	var latest sql.NullInt64
+// bumpZoneSerial raises the zone's serial inside the write that changed the zone. It takes the
+// time when that is later than the serial, and otherwise adds one, so two changes in the same
+// second still leave the serial different.
+func bumpZoneSerial(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE dns_zone SET serial = MAX(serial + 1, ?) WHERE id = 1`, time.Now().Unix())
 
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT MAX(updated_at) FROM dns_records`).Scan(&latest); err != nil {
-		return time.Time{}, err
+	return err
+}
+
+// ZoneSerial reports the zone's SOA serial. A secondary comparing serials sees the zone move
+// exactly when its contents do, removals included.
+func (s *Store) ZoneSerial(ctx context.Context) (uint32, error) {
+	var serial int64
+
+	if err := s.db.QueryRowContext(ctx, `SELECT serial FROM dns_zone WHERE id = 1`).Scan(&serial); err != nil {
+		return 0, err
 	}
 
-	if !latest.Valid {
-		return time.Time{}, nil
-	}
-
-	return time.Unix(latest.Int64, 0).UTC(), nil
+	return uint32(serial), nil
 }

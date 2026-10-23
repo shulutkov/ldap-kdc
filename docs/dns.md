@@ -182,6 +182,87 @@ answers. Rules:
 A stored record that fails to parse at answer time (only possible after direct database edits) is
 skipped with a warning rather than failing the whole answer: one bad row costs one record.
 
+## Container registration
+
+With `dns.docker.enabled`, the service registers the containers of a Docker host in the zone. A
+container on a configured network gets an `A` record under its name — `web` becomes
+`web.<zone>` — and the record goes when the container stops. A container started on a selected
+network becomes resolvable within moments, with no record to create by hand.
+
+```yaml
+dns:
+  enabled: true
+  # ...
+  docker:
+    enabled: true
+    endpoint: unix:///var/run/docker.sock   # default; or tcp://host:2375
+    networks:
+      - app                 # every container on the network named app
+      - 10.1.0.0/16         # every container with an address inside this prefix
+    resync_every: 1m        # default
+```
+
+| Key            | Default                       | Meaning                                                                                              |
+|----------------|-------------------------------|------------------------------------------------------------------------------------------------------|
+| `enabled`      | `false`                       | Turn registration on. Requires `dns.enabled`: the registrations are answered by the name server.     |
+| `endpoint`     | `unix:///var/run/docker.sock` | The daemon. `unix://` is a socket path; `tcp://host:port` is the daemon's plain remote API.          |
+| `networks`     | none — **required**           | What to register. A network name selects its containers; an IPv4 CIDR selects containers by address. |
+| `resync_every` | `1m`                          | How often the registrations are compared with the daemon in full, in case an event was missed.       |
+
+**Selection is explicit.** Nothing joins the zone merely by running on the host: a container is
+registered only when it is attached to a network in `networks`, or has an address inside one of
+the prefixes. An empty list is refused at startup, because the alternative is registering every
+container the daemon runs.
+
+**Naming.** The name is the container's name in lower case, in the zone (`dns.zone`). A container
+with several selected addresses gets one `A` record per address. IPv6 addresses are not
+registered, since the zone's registrations are address records of type `A`. A name a container
+cannot have in the zone (one `ValidateRecord` refuses) is logged and skipped.
+
+**Ownership.** A registered record carries an `origin` of `docker:<container id>`, and that origin
+is what the service removes it by. So:
+
+- An administrator's record is never touched. If one already holds the name, the container is not
+  registered under it, and a warning says so on each resync.
+- A registration cannot be removed through the REST API, which answers `409`: it goes when its
+  container stops or leaves the selected networks. Creating a record through the API cannot forge an
+  origin either; the field is always empty for an administrator's record.
+- A container renamed in place moves its registration to the new name.
+
+**Changes.** The daemon's container and network events bring a reconciliation forward; the
+resync interval covers any event that was missed. The reconciliation is against the daemon's full
+list of running containers, not against the events, so a restart rebuilds the registrations from
+scratch. If the daemon cannot be reached, nothing is removed: an outage does not take away the names
+of containers that are still running. Stopping the service leaves its registrations in place, and
+the next start reconciles them.
+
+**Security.** The Docker socket is root-equivalent on the host. The service needs only read access
+to the container list and the event stream, but the socket itself grants whatever the daemon does,
+so mount it read-only where the platform allows and reach a remote daemon only over a network
+that is trusted, since `tcp://` is unencrypted.
+
+**Running without root.** The image runs as an unprivileged user (65532), which cannot open the
+daemon's socket by default: the socket belongs to root and the `docker` group. Give that user
+access by adding the socket's group to the container, not by running the service as root:
+
+```yaml
+services:
+  ldap-kdc:
+    group_add:
+      - "999"   # the GID that owns /var/run/docker.sock on the host (stat -c %g, or getent group docker)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+```
+
+The GID is whatever group owns the socket, and it differs by platform. On Docker Desktop the socket
+is owned by group `root` (GID `0`), so `group_add: ["0"]` is the value there; check it from inside a
+container with `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock alpine stat -c %g
+/var/run/docker.sock`. Running with `--user 0:0`, as the verification run did, works but gives the
+service root inside the container, which is what `group_add` avoids.
+
+Each change to the zone raises the SOA serial, removals included, so a secondary comparing serials
+sees a registration disappear.
+
 ## Reverse lookups
 
 PTR records are never stored. A reverse query is turned back into the address it asks about (`in-addr.arpa` labels

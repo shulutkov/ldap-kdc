@@ -597,11 +597,14 @@ The realm's zone, managed through the store; the name server answers from it ([D
 computed from the address records rather than stored, so
 there are no PTR records to write and nothing that can drift out of step.
 
-| Method | Path                       | Purpose                                                                 |
-|--------|----------------------------|-------------------------------------------------------------------------|
-| GET    | `/api/v1/dns/records`      | List records (optionally `?name=` for one name), plus the zones served. |
-| POST   | `/api/v1/dns/records`      | Create a record.                                                        |
-| DELETE | `/api/v1/dns/records/{id}` | Remove one.                                                             |
+| Method | Path                       | Purpose                                                                                        |
+|--------|----------------------------|------------------------------------------------------------------------------------------------|
+| GET    | `/api/v1/dns/records`      | List records (optionally `?name=` for one name), plus the zones served.                        |
+| POST   | `/api/v1/dns/records`      | Create a record.                                                                               |
+| DELETE | `/api/v1/dns/records/{id}` | Remove one. A registered record (see `origin`) answers `409`: it goes when its container does. |
+
+Each record carries an `origin`: empty for a record an administrator made, `docker:<container id>`
+for one the [container registration](dns.md#container-registration) put there.
 
 Create body:
 

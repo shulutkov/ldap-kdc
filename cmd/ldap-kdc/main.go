@@ -23,6 +23,7 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/bootstrap"
 	"github.com/shulutkov/ldap-kdc/internal/config"
 	"github.com/shulutkov/ldap-kdc/internal/dnssrv"
+	"github.com/shulutkov/ldap-kdc/internal/dockerdns"
 	"github.com/shulutkov/ldap-kdc/internal/failban"
 	"github.com/shulutkov/ldap-kdc/internal/kdc"
 	"github.com/shulutkov/ldap-kdc/internal/kpasswd"
@@ -289,6 +290,24 @@ func run(cfg *config.Config) error {
 			return err
 		}
 		services = append(services, service{"dns", srv.Shutdown})
+
+		// Containers on the configured networks are registered in the zone the server answers
+		// for, so the registration starts once the zone is being served.
+		if cfg.DNS.Docker.Enabled {
+			reg, err := dockerdns.New(dockerdns.Config{
+				Endpoint:    cfg.DNS.Docker.Endpoint,
+				Networks:    cfg.DNS.Docker.Networks,
+				Zone:        cfg.DNS.Zone,
+				TTL:         int(cfg.DNS.TTL.Seconds()),
+				ResyncEvery: cfg.DNS.Docker.ResyncEvery,
+			}, st, log)
+			if err != nil {
+				return err
+			}
+
+			reg.Start(ctx)
+			services = append(services, service{"dockerdns", reg.Shutdown})
+		}
 	}
 
 	// apiMount is the console and management API when they share the provider's listener; nil when

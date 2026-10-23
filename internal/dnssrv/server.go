@@ -119,15 +119,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
-// serial is the SOA serial: the time of the last record change, or the zone's configuration if it
-// has never been edited.
+// serial is the SOA serial the store keeps: it rises with every change to the zone, removals
+// included. A zone never edited answers 1, which is also what a failed read answers.
 func (s *Server) serial() uint32 {
-	latest, err := s.st.LatestDNSChange(context.Background())
-	if err != nil || latest.IsZero() {
+	serial, err := s.st.ZoneSerial(context.Background())
+	if err != nil || serial == 0 {
 		return 1
 	}
 
-	return uint32(latest.Unix())
+	return serial
 }
 
 // ServeDNS answers one query.

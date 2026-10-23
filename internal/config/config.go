@@ -196,6 +196,33 @@ type DNS struct {
 	Mailbox string `yaml:"mailbox" env:"MAILBOX"`
 
 	TTL time.Duration `yaml:"ttl" env:"TTL" envDefault:"1h"`
+
+	// Docker registers the address a running container has on one of the configured networks
+	// under the container's name in the zone, and takes the name back when the container stops.
+	Docker DockerDiscovery `yaml:"docker" envPrefix:"DOCKER_"`
+}
+
+// DockerDiscovery is the automatic registration of containers in the zone.
+//
+// Only containers attached to a listed network are registered, so nothing joins the zone merely
+// by running on the host. Networks is required when discovery is on: an empty list would register
+// every container the daemon runs, and that is never what anyone meant.
+type DockerDiscovery struct {
+	Enabled bool `yaml:"enabled" env:"ENABLED"`
+
+	// Endpoint is the Docker daemon: unix:///path/to/socket (the default) or tcp://host:port. The
+	// socket is root-equivalent on the host, so the service should reach it read-only in practice
+	// and never be exposed to anything it does not need to talk to.
+	Endpoint string `yaml:"endpoint" env:"ENDPOINT" envDefault:"unix:///var/run/docker.sock"`
+
+	// Networks selects the containers to register. An entry is a Docker network name, which
+	// selects every container on that network, or an IPv4 CIDR, which selects every container with
+	// an address inside it.
+	Networks []string `yaml:"networks" env:"NETWORKS" envSeparator:","`
+
+	// ResyncEvery is how often the registrations are compared with the daemon in full, in case an
+	// event was missed. Changes are also applied as the daemon reports them.
+	ResyncEvery time.Duration `yaml:"resync_every" env:"RESYNC_EVERY" envDefault:"1m"`
 }
 
 // Bootstrap points at a plan describing the directory a fresh realm should come up with.
@@ -641,6 +668,15 @@ func (c *Config) validateKerberos() error {
 
 // validateDNS checks the zone this server would answer for.
 func (c *Config) validateDNS() error {
+	if c.DNS.Docker.Enabled && !c.DNS.Enabled {
+		return errors.New("dns.docker requires dns to be enabled: the registrations are answered by the name server")
+	}
+	if c.DNS.Docker.Enabled {
+		if err := c.validateDockerDiscovery(); err != nil {
+			return err
+		}
+	}
+
 	if !c.DNS.Enabled {
 		return nil
 	}
@@ -663,6 +699,49 @@ func (c *Config) validateDNS() error {
 
 	if c.DNS.TTL <= 0 {
 		return errors.New("dns.ttl must be positive")
+	}
+
+	return nil
+}
+
+// validateDockerDiscovery checks the container registration's daemon and selection.
+func (c *Config) validateDockerDiscovery() error {
+	d := c.DNS.Docker
+
+	u, err := url.Parse(d.Endpoint)
+	if err != nil {
+		return fmt.Errorf("dns.docker.endpoint %q: %w", d.Endpoint, err)
+	}
+	switch u.Scheme {
+	case "unix":
+		if len(u.Path) == 0 {
+			return fmt.Errorf("dns.docker.endpoint %q names no socket path", d.Endpoint)
+		}
+	case "tcp", "http":
+		if len(u.Host) == 0 {
+			return fmt.Errorf("dns.docker.endpoint %q names no host", d.Endpoint)
+		}
+	default:
+		return fmt.Errorf("dns.docker.endpoint %q must be unix:// or tcp://", d.Endpoint)
+	}
+
+	if len(d.Networks) == 0 {
+		return errors.New("dns.docker.networks is required: list the networks whose containers are registered")
+	}
+	for _, n := range d.Networks {
+		switch {
+		case len(n) == 0:
+			return errors.New("dns.docker.networks has an empty entry")
+		case strings.Contains(n, "/"):
+			p, err := netip.ParsePrefix(n)
+			if err != nil || !p.Addr().Is4() {
+				return fmt.Errorf("dns.docker.networks: %q is not an IPv4 CIDR", n)
+			}
+		}
+	}
+
+	if d.ResyncEvery <= 0 {
+		return errors.New("dns.docker.resync_every must be positive")
 	}
 
 	return nil
