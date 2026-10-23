@@ -14,6 +14,54 @@ root CA with roles for user and server certificates; ldap-kdc's LDAPS listener s
 certificate enrolled from that CA; and the kerberos auth method talking to the directory over
 LDAPS. Everything below explains the pieces.
 
+## Podman
+
+The same stand runs under Podman, with four differences from Docker. Each is about the Podman
+socket or about the network's resolver.
+
+**The socket.** Registration reads the container list and events from the Podman API socket, which
+Podman provides through systemd. Enable it, then point `dns.docker.endpoint` at it:
+
+```sh
+systemctl --user enable --now podman.socket      # rootless
+sudo systemctl enable --now podman.socket        # rootful
+```
+
+```yaml
+dns:
+  docker:
+    endpoint: unix:///run/podman/podman.sock       # rootful; rootless: $XDG_RUNTIME_DIR/podman/podman.sock
+```
+
+**SELinux and the socket.** On an SELinux host the socket carries the label `var_run_t`, and a
+container's default label does not let it connect to that socket. Two ways out, and the choice is
+yours:
+
+- `security_opt: ["label=disable"]` on the `ldap-kdc` service. Simple, and it lifts SELinux
+  confinement for that one container: the KDC process is no longer isolated by the policy.
+- Give the socket a label the policy allows the container to use, so the container keeps its
+  confinement. This is the cleaner option, and it is the one to prefer where the policy can be
+  adjusted.
+
+**Root.** The socket of a rootful Podman is root's: any client that can talk to it can start a
+container with the host's root filesystem. Mounting it read-only does not change that, because
+the API is reached over the socket, not through the file. The service gets the socket's group (`group_add`) and reads
+it; it does not run as root. Treat the mount as root on the host.
+
+**The resolver.** On a network with Podman's DNS enabled, Podman (aardvark) puts its own address
+into each container's `resolv.conf` (`10.99.0.1` on the stand's subnet) and answers names and
+reverse queries itself. A reverse query for `10.99.0.31` then yields the container's short name (`nn`), not the zone's
+name (`nn.example.com`), and Kerberos host canonicalization breaks. Create
+the network with DNS disabled, so every query goes to ldap-kdc:
+
+```sh
+podman network create --disable-dns --subnet 10.99.0.0/24 example.com
+```
+
+Then mark the network `external: true` in the compose file and make the containers use the
+service's address as their resolver (`dns: 10.99.0.10` and `dns_search: example.com`). Recreating
+the network and the containers keeps the volumes, so the data survives.
+
 ## Layout
 
 ```

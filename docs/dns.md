@@ -219,6 +219,27 @@ with several selected addresses gets one `A` record per address. IPv6 addresses 
 registered, since the zone's registrations are address records of type `A`. A name a container
 cannot have in the zone (one `ValidateRecord` refuses) is logged and skipped.
 
+**The name is the container's name, not the service's.** Docker Compose names a container
+`<project>-<service>-<n>` (`tembo-consul-1`) unless the service sets `container_name`. So the record
+is `tembo-consul-1.<zone>`, and a client that looks for `consul.<zone>` finds nothing. Set the name
+the zone should hold:
+
+```yaml
+services:
+  consul:
+    container_name: consul      # registered as consul.example.com
+```
+
+The same holds for the reverse lookup: a node's address reverses to its container's name, so the
+name must also be the one its Kerberos principal carries (`tembo-a` for `tembo-a.example.com`).
+
+**The network is a selector, not a name in the zone.** Its name only decides which containers are
+registered. The zone's own name is `dns.zone`. The reverse answer, though, comes from the server
+only if the client asks the server: a container on a Docker network whose resolver answers reverse
+queries itself gets `<container>.<network>` instead. Point the containers at ldap-kdc
+(`resolv.conf` with `nameserver` the service's address, and `search <zone>`), or name the network
+after the zone, as the stand in `tembo` does.
+
 **Ownership.** A registered record carries an `origin` of `docker:<container id>`, and that origin
 is what the service removes it by. So:
 
