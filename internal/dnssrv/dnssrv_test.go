@@ -436,3 +436,51 @@ func TestExtraForwardZones(t *testing.T) {
 		}
 	})
 }
+
+// The hosts are named in a zone other than the realm's, as in a Kubernetes namespace: the client
+// still finds the KDC under the realm's name, and learns the realm from the hosts' domain.
+func TestHostsZoneOtherThanTheRealms(t *testing.T) {
+	const hosts = "adh.adh.svc.cluster.local"
+	h := newHarness(t, func(c *Config) {
+		c.Zone = hosts
+		c.Hostname = "kdc." + hosts
+	})
+
+	t.Run("the KDC is found by the realm's name", func(t *testing.T) {
+		got := h.ask(t, "_kerberos._udp."+testZone, dns.TypeSRV)
+		if got.Rcode != dns.RcodeSuccess || len(got.Answer) != 1 {
+			t.Fatalf("rcode %s, %d answers", dns.RcodeToString[got.Rcode], len(got.Answer))
+		}
+		if srv := got.Answer[0].(*dns.SRV); srv.Port != 88 || srv.Target != dns.Fqdn("kdc."+hosts) {
+			t.Errorf("SRV = %v", srv)
+		}
+	})
+
+	t.Run("the hosts' domain names the realm", func(t *testing.T) {
+		got := h.ask(t, "_kerberos."+hosts, dns.TypeTXT)
+		if len(got.Answer) != 1 || got.Answer[0].(*dns.TXT).Txt[0] != testRealm {
+			t.Errorf("TXT = %v, want %s", got.Answer, testRealm)
+		}
+	})
+
+	t.Run("the realm's zone has an apex", func(t *testing.T) {
+		got := h.ask(t, testZone, dns.TypeSOA)
+		if got.Rcode != dns.RcodeSuccess || len(got.Answer) == 0 {
+			t.Fatalf("rcode %s, %d answers", dns.RcodeToString[got.Rcode], len(got.Answer))
+		}
+		if soa, ok := got.Answer[0].(*dns.SOA); !ok || soa.Hdr.Name != dns.Fqdn(testZone) {
+			t.Errorf("SOA names %v", got.Answer[0])
+		}
+	})
+
+	t.Run("a host is not in the realm's zone", func(t *testing.T) {
+		h.addRecord(t, "nn."+hosts, "A", "192.0.2.20")
+		if got := h.ask(t, "nn."+hosts, dns.TypeA); len(got.Answer) != 1 {
+			t.Errorf("nn in the hosts' zone: %d answers", len(got.Answer))
+		}
+		got := h.ask(t, "nn."+testZone, dns.TypeA)
+		if got.Rcode != dns.RcodeNameError || len(got.Ns) != 1 || got.Ns[0].Header().Name != dns.Fqdn(testZone) {
+			t.Errorf("nn in the realm's zone: rcode %s, authority %v", dns.RcodeToString[got.Rcode], got.Ns)
+		}
+	})
+}

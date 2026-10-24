@@ -39,7 +39,7 @@ dns:
 |-----------------|---------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `enabled`       | `false`             | Bind the DNS listeners.                                                                                                        |
 | `listen`        | `0.0.0.0:53`        | One address for both TCP and UDP.                                                                                              |
-| `zone`          | `server.domain`     | The primary forward zone; the realm's discovery records live here.                                                             |
+| `zone`          | `server.domain`     | The primary forward zone: the hosts' names and the `_kerberos` TXT record naming the realm.                                    |
 | `extra_zones`   | none                | Further forward zones, answered but carrying no discovery records.                                                             |
 | `reverse_zones` | none                | `in-addr.arpa` / `ip6.arpa` zones answered for.                                                                                |
 | `hostname`      | none — **required** | This server's FQDN: the zone's NS, the target of every SRV record, the name `addresses` resolve to. Never guessed from the OS. |
@@ -62,11 +62,17 @@ sysctls entry; see [operations](operations.md) and [docker-compose](docker-compo
 
 ## Zones
 
-`zoneFor` classifies each query name: the primary `zone`, then `extra_zones`, then
-`reverse_zones` (suffix match on the zone name). A name in none of them is refused.
+`zoneFor` classifies each query name: the primary `zone`, then the realm's zone, then
+`extra_zones`, then `reverse_zones` (suffix match on the zone name). A name in none of them is
+refused.
 
 - **Primary zone** — carries the apex, this server's address records, and all of the realm's
   discovery records.
+- **Realm's zone** — the realm in lower case, when the hosts are named in another `zone` (a stand in
+  a Kubernetes namespace: realm `ADH.LOCAL`, hosts in `adh.adh.svc.cluster.local`). A client looks the
+  KDC up by the realm's name (`_kerberos._udp.ADH.LOCAL`, RFC 4120 §7.2.3), so this zone gets an
+  apex and the realm's SRV and TXT records, and nothing else: a host name in it does not exist.
+  With `zone` equal to the realm's domain, the usual case, the two are one zone.
 - **Extra zones** — get an apex (SOA and NS) and nothing else automatically. They carry only
   records stored in them, and deliberately publish no discovery records: advertising the realm
   under a second name would advertise a second realm.
@@ -94,14 +100,14 @@ has never been edited — a secondary comparing serials sees the zone move when 
 At **`dns.hostname`**: one `A` or `AAAA` record per entry of `dns.addresses` (v4 becomes A,
 v6 becomes AAAA).
 
-At **`_kerberos.<zone>`**: a `TXT` record whose single string is the realm (RFC 4120 §7.2.3 — a client that knows only
+At **`_kerberos.<zone>`** (and `_kerberos.<realm's zone>` when that is another): a `TXT` record whose single string is the realm (RFC 4120 §7.2.3 — a client that knows only
 its domain discovers the realm here):
 
 ```
 _kerberos.example.com.  3600  IN  TXT  "EXAMPLE.COM"
 ```
 
-**SRV discovery records** are derived from the listeners this process actually runs, so a client
+**SRV discovery records**, under the realm's zone and under `zone`, are derived from the listeners this process actually runs, so a client
 reading them finds only services that answer. Each service is published with `Priority 0`,
 `Weight 100`, the listener's port, and `Target` = `dns.hostname`:
 

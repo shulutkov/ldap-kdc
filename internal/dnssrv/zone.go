@@ -33,9 +33,14 @@ type Config struct {
 	// Realm is the Kerberos realm, published in the _kerberos TXT record so a client can
 	// discover it from its domain name alone.
 	Realm string
-	// Zone is the PRIMARY forward zone, normally the realm's domain in lower case. It is the one
-	// the realm's own discovery records live in.
+	// Zone is the PRIMARY forward zone: the hosts' names, normally the realm's domain in lower
+	// case. Its _kerberos TXT record names the realm for a client that knows only its domain.
 	Zone string
+	// RealmZone is the realm's own domain, the realm in lower case. A client looks the KDC up by
+	// the realm's name (RFC 4120 section 7.2.3: _kerberos._udp.<REALM>), so the SRV records live
+	// here whatever the hosts are called. When the hosts' zone is another, such as the domain of
+	// a Kubernetes namespace, this one is served too: its apex and the discovery records.
+	RealmZone string
 	// ExtraZones are further forward zones this server answers for, and they carry no discovery
 	// records of their own — only what was put in them.
 	//
@@ -60,7 +65,8 @@ type Config struct {
 
 	TTL time.Duration
 
-	// Services are advertised as SRV records under the zone.
+	// Services are advertised as SRV records under the realm's zone, and under the hosts' zone
+	// when that is another one.
 	Services []Service
 }
 
@@ -68,10 +74,17 @@ type Config struct {
 func (c *Config) normalize() error {
 	c.Realm = strings.ToUpper(strings.TrimSpace(c.Realm))
 	c.Zone = store.NormalizeDNSName(c.Zone)
+	c.RealmZone = store.NormalizeDNSName(c.RealmZone)
 	c.Hostname = store.NormalizeDNSName(c.Hostname)
 
 	if len(c.Zone) == 0 {
 		return fmt.Errorf("dns: zone is required")
+	}
+	if len(c.RealmZone) == 0 {
+		c.RealmZone = store.NormalizeDNSName(c.Realm)
+	}
+	if len(c.RealmZone) == 0 {
+		c.RealmZone = c.Zone
 	}
 	if len(c.Hostname) == 0 {
 		return fmt.Errorf("dns: hostname is required")
@@ -127,6 +140,14 @@ func (s *Server) generated(name string) []dns.RR {
 			Ns:  host,
 		})
 
+	// The realm's zone when the hosts are named in another: an apex, and below the discovery
+	// records of the realm itself, the only ones a client looks for under the realm's name.
+	case name == s.cfg.RealmZone:
+		out = append(out, s.soa(name), &dns.NS{
+			Hdr: dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
+			Ns:  host,
+		})
+
 	// An extra zone gets an apex too — a zone without one is not a zone, and a resolver asking for
 	// its SOA is entitled to an answer — but nothing else: the discovery records belong to the
 	// realm, and publishing them under a second name would advertise a second realm.
@@ -154,7 +175,7 @@ func (s *Server) generated(name string) []dns.RR {
 			}
 		}
 
-	case name == "_kerberos."+s.cfg.Zone:
+	case name == "_kerberos."+s.cfg.Zone || name == "_kerberos."+s.cfg.RealmZone:
 		// RFC 4120 section 7.2.3: a client that knows only its domain finds the realm here.
 		out = append(out, &dns.TXT{
 			Hdr: dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: ttl},
@@ -168,7 +189,7 @@ func (s *Server) generated(name string) []dns.RR {
 		}
 
 		for _, label := range svc.Names {
-			if name != label+"."+s.cfg.Zone {
+			if name != label+"."+s.cfg.RealmZone && name != label+"."+s.cfg.Zone {
 				continue
 			}
 

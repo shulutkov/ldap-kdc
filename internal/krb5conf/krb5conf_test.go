@@ -108,3 +108,22 @@ func TestRealmIsRequired(t *testing.T) {
 		t.Fatal("a config without a realm rendered")
 	}
 }
+
+func TestHostsZoneIsMappedToTheRealm(t *testing.T) {
+	cfg := stand()
+	cfg.Server.Domain = "adh.local"
+	cfg.DNS.Zone = "adh.adh.svc.cluster.local"
+	out, err := Render(cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"    .adh.adh.svc.cluster.local = ADH.LOCAL",
+		"    adh.adh.svc.cluster.local = ADH.LOCAL",
+		"    .adh.local = ADH.LOCAL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -84,13 +85,23 @@ func Render(cfg *config.Config, opts Options) (string, error) {
 		b.WriteString("    }\n")
 	}
 
+	// the hosts are named in the name server's zone, which may be another than the realm's domain
+	domains := []string{}
+	if cfg.DNS.Enabled && cfg.DNS.Zone != "" {
+		domains = append(domains, cfg.DNS.Zone)
+	}
 	domain := cfg.Server.Domain
 	if domain == "" {
 		domain = strings.ToLower(realm)
 	}
+	if !slices.Contains(domains, domain) {
+		domains = append(domains, domain)
+	}
 	b.WriteString("\n[domain_realm]\n")
-	b.WriteString("    ." + domain + " = " + realm + "\n")
-	b.WriteString("    " + domain + " = " + realm + "\n")
+	for _, d := range domains {
+		b.WriteString("    ." + d + " = " + realm + "\n")
+		b.WriteString("    " + d + " = " + realm + "\n")
+	}
 	return b.String(), nil
 }
 

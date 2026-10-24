@@ -263,7 +263,8 @@ curl -s -o HTTP_www.example.com.keytab \
 the service runs with, so a client's `krb5.conf` is generated from the same settings as the KDC:
 the realm, the enctypes, the ticket lifetimes, and the addresses. With the name server on, the
 configuration finds the KDC and the realm through the zone's records and names no host; without it,
-the KDC and the password service are named explicitly. The file holds no secret.
+the KDC and the password service are named explicitly. `[domain_realm]` maps the name server's
+`dns.zone`, where the hosts are named, and `server.domain` to the realm. The file holds no secret.
 
 ```sh
 ldap-kdc krb5conf -c ldap-kdc.yaml > krb5.conf                 # the name server is on

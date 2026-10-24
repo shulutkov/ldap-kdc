@@ -73,6 +73,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.log.Info().
 		Str("address", ln.Addr().String()).
 		Str("zone", s.cfg.Zone).
+		Str("realmZone", s.cfg.RealmZone).
 		Strs("reverseZones", s.cfg.ReverseZones).
 		Msg("DNS server listening")
 
@@ -188,6 +189,10 @@ func (s *Server) answer(ctx context.Context, r *dns.Msg) *dns.Msg {
 func (s *Server) zoneFor(name string) (zone string, reverse bool) {
 	if inZone(name, s.cfg.Zone) {
 		return s.cfg.Zone, false
+	}
+
+	if inZone(name, s.cfg.RealmZone) {
+		return s.cfg.RealmZone, false
 	}
 
 	for _, z := range s.cfg.ExtraZones {
