@@ -259,6 +259,19 @@ curl -s -o HTTP_www.example.com.keytab \
   -H "$AUTH" "$API/principals/HTTP/www.example.com/keytab"
 ```
 
+**Client configuration.** `ldap-kdc krb5conf` prints the Kerberos client configuration of the realm
+the service runs with, so a client's `krb5.conf` is generated from the same settings as the KDC:
+the realm, the enctypes, the ticket lifetimes, and the addresses. With the name server on, the
+configuration finds the KDC and the realm through the zone's records and names no host; without it,
+the KDC and the password service are named explicitly. The file holds no secret.
+
+```sh
+ldap-kdc krb5conf -c ldap-kdc.yaml > krb5.conf                 # the name server is on
+ldap-kdc krb5conf -c ldap-kdc.yaml -host kdc.example.com -o krb5.conf   # the name server is off
+```
+
+Only the configuration is read: the bootstrap plan does not need to exist for this.
+
 **ktadd.** `ldap-kdc ktadd` adds the keys of one or more principals to a keytab file, as MIT's
 `ktadd -k` does. It works on the database directly, like `kadmin.local`, so it runs where the
 service's data is — in the container or on the host, with the configuration and the master key in

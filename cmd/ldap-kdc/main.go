@@ -54,6 +54,14 @@ func main() {
 
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "krb5conf" {
+		if err := runKrb5Conf(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "krb5conf:", err)
+			os.Exit(1)
+		}
+
+		return
+	}
 
 	var (
 		configPath  = flag.String("config", "ldap-kdc.yaml", "path to the configuration file")

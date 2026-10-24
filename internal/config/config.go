@@ -365,6 +365,17 @@ var realmRE = regexp.MustCompile(`^[A-Z0-9][A-Z0-9.-]*[A-Z0-9]$`)
 // An empty path configures the service from the environment alone; a path that does not exist is
 // an error, because silently running on defaults is not what someone naming a file meant.
 func Load(path string) (*Config, error) {
+	return load(path, true)
+}
+
+// LoadForClients reads the configuration for a tool that only needs the settings the clients see,
+// such as the Kerberos client configuration. Files the service itself reads at start-up, the
+// bootstrap plan, are not required to exist for it.
+func LoadForClients(path string) (*Config, error) {
+	return load(path, false)
+}
+
+func load(path string, checkFiles bool) (*Config, error) {
 	cfg := &Config{}
 
 	// The defaults live in envDefault tags, so this one call yields both them and whatever the
@@ -383,7 +394,7 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.validate(checkFiles); err != nil {
 		return nil, err
 	}
 
@@ -507,6 +518,12 @@ func (c *Config) resolve(p string) string {
 
 // Validate reports the first configuration error that would keep the service from starting.
 func (c *Config) Validate() error {
+	return c.validate(true)
+}
+
+// validate checks the configuration; checkFiles adds the checks that files the service reads at
+// start-up exist.
+func (c *Config) validate(checkFiles bool) error {
 	if len(c.Server.SSHKeyAttrs) == 0 {
 		return errors.New("server.ssh_key_attrs must name at least one attribute")
 	}
@@ -540,7 +557,7 @@ func (c *Config) Validate() error {
 
 	// A named plan that cannot be read is a start-up failure waiting to happen, so it is caught
 	// here where --check-config will find it.
-	if len(c.Bootstrap.File) > 0 {
+	if checkFiles && len(c.Bootstrap.File) > 0 {
 		if _, err := os.Stat(c.Bootstrap.File); err != nil {
 			return fmt.Errorf("bootstrap.file: %w", err)
 		}
