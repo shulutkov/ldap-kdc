@@ -49,6 +49,14 @@ services:
       - 127.0.0.1:464:464/udp
       - 127.0.0.1:88:88
       - 127.0.0.1:88:88/udp
+    # The image is scratch — no shell, no wget — so the binary probes its own management API:
+    # /readyz answers 200 once the store is up and the realm is initialized.
+    healthcheck:
+      test: ["CMD", "ldap-kdc", "health", "-c", "/etc/ldap-kdc/ldap-kdc.yaml", "-timeout", "2s"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   openbao:
     build:
@@ -74,9 +82,10 @@ services:
     ports:
       - 127.0.0.1:8200:8200
     depends_on:
-      # No condition: ldap-kdc is a scratch image with neither shell nor wget to healthcheck
-      # with, and compose/setup.sh waits for /readyz itself.
-      - ldap-kdc
+      # ldap-kdc's healthcheck is the binary's own health command; compose/setup.sh still waits
+      # for /readyz itself before wiring anything.
+      ldap-kdc:
+        condition: service_healthy
     healthcheck:
       test: wget -q -O /dev/null http://127.0.0.1:8200/v1/sys/init
       interval: 5s

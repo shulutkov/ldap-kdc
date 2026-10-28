@@ -95,7 +95,9 @@ Built from the repository's own Dockerfile (`ldap-kdc:compose`), configured by
 
 Published on `127.0.0.1`: `5555` (management API), `389`, `636`, `464` and `88` (TCP and UDP).
 The process runs unprivileged and still binds 53/88/389/464 inside its namespace thanks to the
-`net.ipv4.ip_unprivileged_port_start=0` sysctl in the compose file.
+`net.ipv4.ip_unprivileged_port_start=0` sysctl in the compose file. The healthcheck is the
+binary's own `ldap-kdc health` — the scratch image carries neither shell nor wget — and OpenBao
+waits for it (`depends_on: service_healthy`).
 
 ### OpenBao
 

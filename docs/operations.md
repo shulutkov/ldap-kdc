@@ -191,6 +191,19 @@ address for `api` and `oidc`), the probes ride on that listener instead. See
   LDAPS listener started without `cert_path` serves no certificate until the first Vault PKI
   enrollment lands (handshakes fail until then), and `/readyz` still reports ready. Readiness here
   means "the store answers and the realm exists", not "every handshake you might attempt succeeds".
+
+For a container's healthcheck there is no need for curl or wget — which the scratch image does
+not carry: the binary probes itself. `ldap-kdc health` reads the same configuration as the
+service, asks the management API's `/readyz` (`/healthz` with `-live`) over loopback, and exits 0
+on a 200 answer, 1 otherwise — Docker's verdict:
+
+```yaml
+healthcheck:
+  test: ["CMD", "ldap-kdc", "health", "-c", "/etc/ldap-kdc/ldap-kdc.yaml"]
+  interval: 5s
+  timeout: 3s
+  retries: 12
+```
 - **`GET /metrics`** — Prometheus text format. A private registry with the standard Go and process
   collectors plus the service's own families:
 

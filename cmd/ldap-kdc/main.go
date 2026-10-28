@@ -62,6 +62,14 @@ func main() {
 
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		if err := runHealth(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "health:", err)
+			os.Exit(1)
+		}
+
+		return
+	}
 
 	var (
 		configPath  = flag.String("config", "ldap-kdc.yaml", "path to the configuration file")
