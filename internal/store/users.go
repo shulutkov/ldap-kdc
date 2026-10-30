@@ -228,8 +228,8 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 
 	now := time.Now().UTC()
 
-	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
+	return s.write(ctx, func(tx *Tx) error {
+		id, err := insertID(ctx, tx, `
 			INSERT INTO users (name, uid_number, primary_group, given_name, sn, mail,
 			                   login_shell, home_dir, disabled, pass_bcrypt, otp_secret,
 			                   created_at, updated_at)
@@ -237,11 +237,6 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 			u.Name, u.UIDNumber, u.PrimaryGroup, u.GivenName, u.SN, u.Mail,
 			u.LoginShell, u.Homedir, u.Disabled, u.PassBcrypt, u.OTPSecret,
 			now.Unix(), now.Unix())
-		if err != nil {
-			return err
-		}
-
-		id, err := res.LastInsertId()
 		if err != nil {
 			return err
 		}
@@ -262,7 +257,7 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 func (s *Store) UpdateUser(ctx context.Context, name string, mutate func(*User) error) (*User, error) {
 	var out *User
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, name)
 		if err != nil {
 			return err
@@ -321,7 +316,7 @@ func (s *Store) UpdateUser(ctx context.Context, name string, mutate func(*User) 
 
 // DeleteUser removes a user together with its principals and their keys.
 func (s *Store) DeleteUser(ctx context.Context, name string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, name)
 		if err != nil {
 			return err
@@ -349,7 +344,7 @@ func (s *Store) DeleteUser(ctx context.Context, name string) error {
 }
 
 // writeUserChildren replaces the user's child rows to match the in-memory value.
-func (s *Store) writeUserChildren(ctx context.Context, tx *sql.Tx, u *User) error {
+func (s *Store) writeUserChildren(ctx context.Context, tx *Tx, u *User) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE user_id = ?`, u.ID); err != nil {
 		return err
 	}
@@ -360,7 +355,8 @@ func (s *Store) writeUserChildren(ctx context.Context, tx *sql.Tx, u *User) erro
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO user_groups (user_id, gid_number) VALUES (?, ?)`, u.ID, gid,
+			`INSERT INTO user_groups (user_id, gid_number) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+			u.ID, gid,
 		); err != nil {
 			return err
 		}
@@ -388,7 +384,7 @@ func (s *Store) writeUserChildren(ctx context.Context, tx *sql.Tx, u *User) erro
 func (s *Store) AddAppPassword(ctx context.Context, userName, name, hash string) (*AppPassword, error) {
 	var out *AppPassword
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err
@@ -396,14 +392,9 @@ func (s *Store) AddAppPassword(ctx context.Context, userName, name, hash string)
 
 		now := time.Now().UTC()
 
-		res, err := tx.ExecContext(ctx,
+		id, err := insertID(ctx, tx,
 			`INSERT INTO user_app_passwords (user_id, name, hash, created_at) VALUES (?, ?, ?, ?)`,
 			u.ID, name, hash, now.Unix())
-		if err != nil {
-			return err
-		}
-
-		id, err := res.LastInsertId()
 		if err != nil {
 			return err
 		}
@@ -418,7 +409,7 @@ func (s *Store) AddAppPassword(ctx context.Context, userName, name, hash string)
 
 // DeleteAppPassword removes one application password of a user.
 func (s *Store) DeleteAppPassword(ctx context.Context, userName string, id int64) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err

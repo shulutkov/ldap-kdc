@@ -23,7 +23,7 @@ The image is built from the shipped `Dockerfile` and its properties matter for o
   or the management API. The image is about seven megabytes.
 - **Non-root** — the process runs as uid/gid `65532` (the distroless "nonroot" id; there is no
   `/etc/passwd`, so the id is numeric). All files the image carries are owned by `65532:65532`.
-- **Pure Go** — `CGO_ENABLED=0`; the SQLite driver is pure Go, so the binary is fully static.
+- **Pure Go** — `CGO_ENABLED=0`; both database drivers (SQLite, PostgreSQL) are pure Go, so the binary is fully static.
 - **Entrypoint** — `ENTRYPOINT ["/usr/local/bin/ldap-kdc"]`, `CMD ["-c", "/etc/ldap-kdc/ldap-kdc.yaml"]`.
   Arguments to `docker run <image> ...` replace the CMD, e.g. `docker run <image> -version`.
 - **Exposed ports** — `53/tcp 53/udp 88/tcp 88/udp 389/tcp 636/tcp 464/tcp 464/udp 5555/tcp`.
@@ -132,13 +132,14 @@ depends on `net.ipv4.ip_unprivileged_port_start`:
 All mutable state lives under one directory — `/var/lib/ldap-kdc` in the image and the systemd
 unit — holding exactly two things that matter:
 
-| File (defaults from `database.*`) | What it is                                                                          |
-|-----------------------------------|-------------------------------------------------------------------------------------|
-| `ldap-kdc.db`                     | the SQLite database: accounts, groups, principals, sealed keys, DNS records, trusts |
-| `master.key`                      | the 32-byte master key that seals every Kerberos key in the database                |
+| File (defaults from `database.*`) | What it is                                                                                                                       |
+|-----------------------------------|----------------------------------------------------------------------------------------------------------------------------------|
+| `ldap-kdc.db`                     | the SQLite database (absent with a `postgres://` `database.url`): accounts, groups, principals, sealed keys, DNS records, trusts |
+| `master.key`                      | the 32-byte master key that seals every Kerberos key in the database                                                             |
 
 Configuration is conventionally mounted at `/etc/ldap-kdc` (read-only: the service never writes
-it). Relative paths in the configuration — including `database.path` and `database.master_key_file` —
+it). Relative paths in the configuration — including the file of a `sqlite://` `database.url` and
+`database.master_key_file` —
 resolve against the directory holding the configuration file, not the working directory.
 
 In the image, `/var/lib/ldap-kdc` is declared a `VOLUME` and the whole tree is pre-created owned
@@ -199,11 +200,12 @@ on a 200 answer, 1 otherwise — Docker's verdict:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "ldap-kdc", "health", "-c", "/etc/ldap-kdc/ldap-kdc.yaml"]
+  test: [ "CMD", "ldap-kdc", "health", "-c", "/etc/ldap-kdc/ldap-kdc.yaml" ]
   interval: 5s
   timeout: 3s
   retries: 12
 ```
+
 - **`GET /metrics`** — Prometheus text format. A private registry with the standard Go and process
   collectors plus the service's own families:
 
@@ -220,6 +222,7 @@ healthcheck:
 | `oidc_requests_total`             | `operation`, `result`       | OIDC operations by result            |
 | `dns_queries_total`               | `type`, `rcode`             | DNS queries by record type and rcode |
 | `dns_query_duration_seconds`      | —                           | histogram, DNS answer time           |
+
 ## Logging
 
 Logs go to stderr via zerolog. Two top-level configuration keys shape them:
@@ -250,7 +253,11 @@ recover differently.
   the KDC side. This is why the image declares the volume and the unit makes the directory `0700`,
   and why the start-up log says to back the key up the moment it is generated.
 
-For a consistent database snapshot, stop the service or use SQLite's own tooling; the database
+On PostgreSQL the database is backed up the usual way (`pg_dump`, or a base backup), and the same
+rule holds: the dump is useless without the master key, so keep the two together but apart from
+other copies.
+
+For a consistent SQLite snapshot, stop the service or use SQLite's own tooling; the database
 runs in WAL mode, so copying the `.db` file from under a running writer risks missing the WAL's
 contents — copy `-wal` and `-shm` along with it at minimum, and prefer a quiesced copy.
 
@@ -344,9 +351,11 @@ rollback plan matters.
 
 Only what the code justifies:
 
-- **Single node, single writer.** The store is SQLite on local disk; write transactions are
-  serialized on an in-process mutex, deliberately — one predictable writer beats concurrent writers
-  colliding on `SQLITE_BUSY`. There is no replication and no failover. See
+- **Single writer.** On SQLite, write transactions are serialized on an in-process mutex,
+  deliberately — one predictable writer beats concurrent writers colliding on `SQLITE_BUSY`. On
+  PostgreSQL they are serialized by an advisory lock as well, across every service using the
+  database. Either way there is no replication of the service's own and no failover; PostgreSQL's
+  are yours to provide. See
   [architecture](architecture.md).
 - **WAL mode with a small pool.** The database opens with `journal_mode(WAL)`,
   `synchronous(NORMAL)`, `busy_timeout(10000)`, foreign keys on, at most 8 open connections (4

@@ -94,9 +94,14 @@ type Server struct {
 	IDRangeSecondaryBaseRID int `yaml:"id_range_secondary_base_rid" env:"ID_RANGE_SECONDARY_BASE_RID" envDefault:"100000000"`
 }
 
-// Database locates the SQLite file and the master key that seals key material inside it.
+const sqliteScheme = "sqlite://"
+
+// Database locates the database and the master key that seals key material inside it.
 type Database struct {
-	Path string `yaml:"path" env:"PATH" envDefault:"ldap-kdc.db"`
+	// URL names the database: sqlite://ldap-kdc.db, sqlite:///var/lib/ldap-kdc/ldap-kdc.db (what
+	// follows the scheme is the file, relative to the configuration file unless it is absolute), or
+	// postgres://user:password@host:5432/dbname?sslmode=verify-full.
+	URL string `yaml:"url" env:"URL" envDefault:"sqlite://ldap-kdc.db"`
 
 	// MasterKeyFile holds the 32 byte key that all Kerberos key material is sealed with. It is
 	// generated on first start if the file does not exist.
@@ -463,7 +468,9 @@ func (c *Config) normalize() error {
 		c.API.Token = strings.TrimSpace(string(b))
 	}
 
-	c.Database.Path = c.resolve(c.Database.Path)
+	if path, ok := strings.CutPrefix(c.Database.URL, sqliteScheme); ok {
+		c.Database.URL = sqliteScheme + c.resolve(path)
+	}
 	c.Database.MasterKeyFile = c.resolve(c.Database.MasterKeyFile)
 	c.LDAP.CertPath = c.resolve(c.LDAP.CertPath)
 	c.LDAP.KeyPath = c.resolve(c.LDAP.KeyPath)
@@ -536,8 +543,14 @@ func (c *Config) validate(checkFiles bool) error {
 	if len(c.Server.DomainSID) > 0 && !strings.HasPrefix(c.Server.DomainSID, "S-1-5-21-") {
 		return fmt.Errorf("server.domain_sid %q must be an S-1-5-21 domain SID", c.Server.DomainSID)
 	}
-	if len(c.Database.Path) == 0 {
-		return errors.New("database.path is required")
+	switch {
+	case strings.HasPrefix(c.Database.URL, sqliteScheme):
+		if len(c.Database.URL) == len(sqliteScheme) {
+			return errors.New("database.url names no SQLite file")
+		}
+	case strings.HasPrefix(c.Database.URL, "postgres://"), strings.HasPrefix(c.Database.URL, "postgresql://"):
+	default:
+		return errors.New("database.url must be a sqlite:// or postgres:// URL")
 	}
 	if len(c.Database.MasterKeyFile) == 0 {
 		return errors.New("database.master_key_file is required")

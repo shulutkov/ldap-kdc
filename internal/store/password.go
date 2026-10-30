@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -64,7 +63,7 @@ func (s *Store) SetUserPassword(ctx context.Context, userName, password string, 
 		return err
 	}
 
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err
@@ -140,7 +139,7 @@ func (s *Store) RandomizePrincipalKeys(ctx context.Context, name krbkeys.Name, e
 
 // ClearUserPassword removes the LDAP password digest, leaving Kerberos keys untouched.
 func (s *Store) ClearUserPassword(ctx context.Context, userName string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err
@@ -154,7 +153,7 @@ func (s *Store) ClearUserPassword(ctx context.Context, userName string) error {
 	})
 }
 
-func (s *Store) principalsForUserTx(ctx context.Context, tx *sql.Tx, userID int64) ([]Principal, error) {
+func (s *Store) principalsForUserTx(ctx context.Context, tx *Tx, userID int64) ([]Principal, error) {
 	rows, err := tx.QueryContext(ctx, principalSelect+` WHERE p.user_id = ? ORDER BY p.name`, userID)
 	if err != nil {
 		return nil, err

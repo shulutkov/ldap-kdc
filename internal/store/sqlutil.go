@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// querier is the part of *sql.DB and *sql.Tx this package needs, so read helpers can be reused
+// querier is the part of *database and *Tx this package needs, so read helpers can be reused
 // inside a write transaction and see that transaction's own uncommitted rows.
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)

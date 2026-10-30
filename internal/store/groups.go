@@ -126,16 +126,11 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 
 	now := time.Now().UTC()
 
-	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
+	return s.write(ctx, func(tx *Tx) error {
+		id, err := insertID(ctx, tx, `
 			INSERT INTO groups (name, gid_number, description, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?)`,
 			g.Name, g.GIDNumber, g.Description, now.Unix(), now.Unix())
-		if err != nil {
-			return err
-		}
-
-		id, err := res.LastInsertId()
 		if err != nil {
 			return err
 		}
@@ -165,7 +160,7 @@ func (s *Store) CreateGroup(ctx context.Context, g *Group) error {
 func (s *Store) UpdateGroup(ctx context.Context, name string, mutate func(*Group) error) (*Group, error) {
 	var out *Group
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		g, err := s.getGroup(ctx, tx, `name = ?`, name)
 		if err != nil {
 			return err
@@ -218,7 +213,7 @@ func (s *Store) UpdateGroup(ctx context.Context, name string, mutate func(*Group
 // DeleteGroup removes a group. Users whose primary group it is keep the now dangling gid, which is
 // visible in LDAP as a group name that no longer resolves; the API refuses the delete in that case.
 func (s *Store) DeleteGroup(ctx context.Context, name string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		g, err := s.getGroup(ctx, tx, `name = ?`, name)
 		if err != nil {
 			return err
@@ -423,14 +418,15 @@ func (s *Store) loadIncludes(ctx context.Context, q querier, groupIDs []int64) (
 	return out, rows.Err()
 }
 
-func (s *Store) replaceIncludes(ctx context.Context, tx *sql.Tx, groupID int64, gids []int) error {
+func (s *Store) replaceIncludes(ctx context.Context, tx *Tx, groupID int64, gids []int) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM group_includes WHERE group_id = ?`, groupID); err != nil {
 		return err
 	}
 
 	for _, gid := range gids {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO group_includes (group_id, included_gid) VALUES (?, ?)`,
+			`INSERT INTO group_includes (group_id, included_gid) VALUES (?, ?)
+			 ON CONFLICT DO NOTHING`,
 			groupID, gid,
 		); err != nil {
 			return err

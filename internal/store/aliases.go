@@ -116,7 +116,7 @@ func (s *Store) nameTaken(ctx context.Context, q querier, n krbkeys.Name, except
 }
 
 // replaceAliases writes the alias table to match the in-memory principal.
-func (s *Store) replaceAliases(ctx context.Context, tx *sql.Tx, p *Principal) error {
+func (s *Store) replaceAliases(ctx context.Context, tx *Tx, p *Principal) error {
 	names, err := normalizeAliases(p)
 	if err != nil {
 		return err

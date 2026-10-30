@@ -221,8 +221,8 @@ func TestRelativePathsResolveNextToTheFile(t *testing.T) {
 
 	dir := filepath.Dir(path)
 
-	if cfg.Database.Path != filepath.Join(dir, "ldap-kdc.db") {
-		t.Errorf("database.path = %q, want it beside the config", cfg.Database.Path)
+	if want := "sqlite://" + filepath.Join(dir, "ldap-kdc.db"); cfg.Database.URL != want {
+		t.Errorf("database.url = %q, want %q, beside the config", cfg.Database.URL, want)
 	}
 	if cfg.Database.MasterKeyFile != filepath.Join(dir, "master.key") {
 		t.Errorf("database.master_key_file = %q", cfg.Database.MasterKeyFile)
@@ -370,5 +370,32 @@ func TestKeyAttributeNamesAreTrimmedAndKeptOnce(t *testing.T) {
 
 	if _, err := Load(write(t, "server:\n  realm: EXAMPLE.COM\n  ssh_key_attr: \"   \"\n")); err == nil || !strings.Contains(err.Error(), "ssh_key_attrs") {
 		t.Errorf("an empty list loaded: err = %v, want a refusal naming ssh_key_attrs", err)
+	}
+}
+
+func TestDatabaseURLNamesSQLiteOrPostgres(t *testing.T) {
+	for url, want := range map[string]string{
+		"sqlite://data.db":                    "sqlite://" + "DIR/data.db",
+		"sqlite:///var/lib/ldap-kdc/x.db":     "sqlite:///var/lib/ldap-kdc/x.db",
+		"postgres://ldap:secret@db:5432/ldap": "postgres://ldap:secret@db:5432/ldap",
+	} {
+		path := write(t, minimal+"database:\n  url: "+url+"\n")
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", url, err)
+		}
+		if w := strings.ReplaceAll(want, "DIR", filepath.Dir(path)); cfg.Database.URL != w {
+			t.Errorf("url %s became %q, want %q", url, cfg.Database.URL, w)
+		}
+	}
+}
+
+func TestDatabaseURLMustHaveAKnownScheme(t *testing.T) {
+	for _, url := range []string{"mysql://db/ldap", "ldap-kdc.db", "sqlite://"} {
+		_, err := Load(write(t, minimal+"database:\n  url: "+url+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "database.url") {
+			t.Errorf("url %q: err = %v, want a database.url complaint", url, err)
+		}
 	}
 }

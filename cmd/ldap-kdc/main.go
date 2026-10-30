@@ -143,7 +143,7 @@ func run(cfg *config.Config) error {
 		return err
 	}
 
-	st, err := store.Open(ctx, cfg.Database.Path, sealer, log)
+	st, err := store.Open(ctx, cfg.Database.URL, sealer, log)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func run(cfg *config.Config) error {
 		return err
 	}
 	if initialized {
-		log.Info().Str("realm", cfg.Server.Realm).Str("database", cfg.Database.Path).
+		log.Info().Str("realm", cfg.Server.Realm).Str("database", st.Location()).
 			Msg("realm initialized")
 	}
 

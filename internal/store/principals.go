@@ -215,7 +215,7 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 
 	now := time.Now().UTC()
 
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		// The unique index catches a clash with another principal's own name; a clash with
 		// somebody's alias spans two tables and has to be checked here.
 		taken, err := s.nameTaken(ctx, tx, name, 0)
@@ -226,7 +226,7 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 			return fmt.Errorf("%w: %s already names a principal in this realm", ErrConflict, name)
 		}
 
-		res, err := tx.ExecContext(ctx, `
+		id, err := insertID(ctx, tx, `
 			INSERT INTO principals (name, realm, user_id, kvno, enabled, requires_preauth,
 			        allow_forwardable, allow_proxiable, allow_renewable, allow_postdate,
 			        ok_as_delegate, ok_to_auth_as_delegate, max_ticket_life, max_renewable_life,
@@ -244,9 +244,7 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 			return err
 		}
 
-		if p.ID, err = res.LastInsertId(); err != nil {
-			return err
-		}
+		p.ID = id
 
 		p.CreatedAt = now
 		p.UpdatedAt = now
@@ -269,7 +267,7 @@ func (s *Store) CreatePrincipal(ctx context.Context, p *Principal, keys []krbkey
 func (s *Store) UpdatePrincipal(ctx context.Context, name krbkeys.Name, mutate func(*Principal) error) (*Principal, error) {
 	var out *Principal
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		p, err := s.getPrincipal(ctx, tx, name, 0)
 		if err != nil {
 			return err
@@ -315,7 +313,7 @@ func (s *Store) UpdatePrincipal(ctx context.Context, name krbkeys.Name, mutate f
 
 // DeletePrincipal removes a principal and its keys.
 func (s *Store) DeletePrincipal(ctx context.Context, name krbkeys.Name) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		res, err := tx.ExecContext(ctx,
 			`DELETE FROM principals WHERE name = ? AND realm = ?`, name.Principal(), name.Realm)
 		if err != nil {
@@ -339,7 +337,7 @@ func (s *Store) DeletePrincipal(ctx context.Context, name krbkeys.Name) error {
 func (s *Store) SetKeys(ctx context.Context, name krbkeys.Name, keys []krbkeys.Key, passwordSet time.Time) (*Principal, error) {
 	var out *Principal
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		p, err := s.getPrincipal(ctx, tx, name, 0)
 		if err != nil {
 			return err
@@ -359,7 +357,7 @@ func (s *Store) SetKeys(ctx context.Context, name krbkeys.Name, keys []krbkeys.K
 // rollKeys installs keys as the principal's next key version and updates p in place. Retiring the
 // old version rather than overwriting it is what lets tickets and keytabs from before the change
 // keep working until they expire.
-func (s *Store) rollKeys(ctx context.Context, tx *sql.Tx, p *Principal, keys []krbkeys.Key, passwordSet time.Time) error {
+func (s *Store) rollKeys(ctx context.Context, tx *Tx, p *Principal, keys []krbkeys.Key, passwordSet time.Time) error {
 	kvno := p.KVNO + 1
 
 	if err := s.writeKeys(ctx, tx, p.ID, kvno, keys); err != nil {
@@ -397,7 +395,7 @@ func (s *Store) rollKeys(ctx context.Context, tx *sql.Tx, p *Principal, keys []k
 	return nil
 }
 
-func (s *Store) writeKeys(ctx context.Context, tx *sql.Tx, principalID int64, kvno int, keys []krbkeys.Key) error {
+func (s *Store) writeKeys(ctx context.Context, tx *Tx, principalID int64, kvno int, keys []krbkeys.Key) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("refusing to store a principal with no keys")
 	}
@@ -447,7 +445,7 @@ type LockoutPolicy struct {
 func (s *Store) RecordAuthResult(ctx context.Context, id int64, ok bool, policy LockoutPolicy) error {
 	now := time.Now().UTC()
 
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		if ok {
 			_, err := tx.ExecContext(ctx, `
 				UPDATE principals SET fail_count = 0, locked_until = NULL,
@@ -589,7 +587,7 @@ func (s *Store) loadPrincipalLists(ctx context.Context, q querier, ids []int64) 
 }
 
 // replacePrincipalLists writes both name lists to match the in-memory principal.
-func (s *Store) replacePrincipalLists(ctx context.Context, tx *sql.Tx, p *Principal) error {
+func (s *Store) replacePrincipalLists(ctx context.Context, tx *Tx, p *Principal) error {
 	for _, t := range []struct {
 		table  string
 		values []string
@@ -611,7 +609,7 @@ func (s *Store) replacePrincipalLists(ctx context.Context, tx *sql.Tx, p *Princi
 				continue
 			}
 			if _, err := tx.ExecContext(ctx,
-				`INSERT OR IGNORE INTO `+t.table+` (principal_id, target) VALUES (?, ?)`,
+				`INSERT INTO `+t.table+` (principal_id, target) VALUES (?, ?) ON CONFLICT DO NOTHING`,
 				p.ID, v,
 			); err != nil {
 				return err
@@ -683,7 +681,7 @@ func (s *Store) ServicePrincipalsOfClass(ctx context.Context, service, realm str
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name FROM principals
-		WHERE realm = ? AND name LIKE ? ESCAPE '\'
+		WHERE realm = ? AND lower(name) LIKE lower(?) ESCAPE '\'
 		ORDER BY name LIMIT ?`, strings.ToUpper(realm), pattern, limit)
 	if err != nil {
 		return nil, err

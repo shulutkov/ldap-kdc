@@ -69,7 +69,7 @@ func runKtadd(args []string) error {
 	ctx := context.Background()
 	log := logging.New(cfg.Debug, cfg.StructuredLog)
 
-	st, err := store.Open(ctx, cfg.Database.Path, sealer, log)
+	st, err := store.Open(ctx, cfg.Database.URL, sealer, log)
 	if err != nil {
 		return err
 	}

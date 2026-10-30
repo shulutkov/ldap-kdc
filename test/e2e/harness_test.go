@@ -80,7 +80,7 @@ server:
   anonymous_dse: true
 
 database:
-  path: /var/lib/ldap-kdc/ldap-kdc.db
+  url: sqlite:///var/lib/ldap-kdc/ldap-kdc.db
   master_key_file: /var/lib/ldap-kdc/master.key
 
 ldap:

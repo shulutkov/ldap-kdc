@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 )
 
 // loadCapabilities fetches the capabilities of several owners of the same kind in one query.
@@ -37,7 +36,7 @@ func (s *Store) loadCapabilities(ctx context.Context, q querier, kind string, ow
 	return out, rows.Err()
 }
 
-func (s *Store) replaceCapabilities(ctx context.Context, tx *sql.Tx, kind string, ownerID int64, caps []Capability) error {
+func (s *Store) replaceCapabilities(ctx context.Context, tx *Tx, kind string, ownerID int64, caps []Capability) error {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM capabilities WHERE owner_kind = ? AND owner_id = ?`, kind, ownerID,
 	); err != nil {

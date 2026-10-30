@@ -186,7 +186,7 @@ func (s *Store) writeIDRange(ctx context.Context, r IDRange) error {
 // An object whose POSIX id lies outside the range gets no identifier at all. That is FreeIPA's
 // answer too, and it is the safe one: the alternative is handing out a RID that means something
 // else, which a member server would read as a different account entirely.
-func (s *Store) allocateRID(ctx context.Context, tx *sql.Tx, kind string, ownerID int64, posixID int) error {
+func (s *Store) allocateRID(ctx context.Context, tx *Tx, kind string, ownerID int64, posixID int) error {
 	if !s.idRange.Contains(posixID) {
 		return nil
 	}
@@ -196,8 +196,9 @@ func (s *Store) allocateRID(ctx context.Context, tx *sql.Tx, kind string, ownerI
 
 	for _, rid := range []int{primary, secondary} {
 		res, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO security_identifiers (rid, owner_kind, owner_id, created_at)
-			VALUES (?, ?, ?, ?)`, rid, kind, ownerID, now)
+			INSERT INTO security_identifiers (rid, owner_kind, owner_id, created_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT DO NOTHING`, rid, kind, ownerID, now)
 		if err != nil {
 			return err
 		}
@@ -216,7 +217,7 @@ func (s *Store) allocateRID(ctx context.Context, tx *sql.Tx, kind string, ownerI
 }
 
 // releaseRID drops an object's identifier, so a later object with the same POSIX id can take it.
-func releaseRID(ctx context.Context, tx *sql.Tx, kind string, ownerID int64) error {
+func releaseRID(ctx context.Context, tx *Tx, kind string, ownerID int64) error {
 	_, err := tx.ExecContext(ctx,
 		`DELETE FROM security_identifiers WHERE owner_kind = ? AND owner_id = ?`, kind, ownerID)
 
@@ -225,7 +226,7 @@ func releaseRID(ctx context.Context, tx *sql.Tx, kind string, ownerID int64) err
 
 // reallocateRID moves an object to the identifier its new POSIX id implies. Changing a uid or gid
 // changes the SID a member server sees, which is why the API warns about it.
-func (s *Store) reallocateRID(ctx context.Context, tx *sql.Tx, kind string, ownerID int64, posixID int) error {
+func (s *Store) reallocateRID(ctx context.Context, tx *Tx, kind string, ownerID int64, posixID int) error {
 	if err := releaseRID(ctx, tx, kind, ownerID); err != nil {
 		return err
 	}
@@ -257,7 +258,7 @@ func ridFor(ctx context.Context, q querier, kind string, ownerID int64) (int, bo
 // backfillSecurityIdentifiers allocates identifiers to objects created before the range was
 // configured, or whose allocation previously failed.
 func (s *Store) backfillSecurityIdentifiers(ctx context.Context) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		for _, t := range []struct {
 			kind  string
 			query string

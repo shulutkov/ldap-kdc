@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	_ "github.com/jackc/pgx/v5/stdlib" // pure Go PostgreSQL driver, no cgo
 	"github.com/rs/zerolog"
 	_ "modernc.org/sqlite" // pure Go SQLite driver, no cgo
 
@@ -21,8 +23,18 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/secret"
 )
 
-//go:embed migrations/*.sql
+// Each dialect has a directory of its own: the migrations make the same tables, but in the types
+// and syntax of the database they run on. A migration is the same file name in both.
+//
+//go:embed migrations
 var migrationFS embed.FS
+
+// writeLockKey is the PostgreSQL advisory lock that serializes write transactions across every
+// process sharing a database, the way writeMu does within one.
+const writeLockKey = 0x6c646b6463 // "ldkdc"
+
+// migrateLockKey keeps two services starting at once from applying the same migration.
+const migrateLockKey = writeLockKey + 1
 
 // ErrNotFound is returned when a lookup finds no matching row.
 var ErrNotFound = errors.New("not found")
@@ -32,9 +44,11 @@ var ErrConflict = errors.New("conflict")
 
 // Store owns the database connection and the sealer that protects key material in it.
 type Store struct {
-	db     *sql.DB
-	sealer *secret.Sealer
-	log    zerolog.Logger
+	db       *database
+	dialect  dialect
+	location string
+	sealer   *secret.Sealer
+	log      zerolog.Logger
 
 	// idRange maps POSIX ids onto Windows relative identifiers. It is pinned by EnsureIDRange
 	// and read on every object creation.
@@ -45,7 +59,8 @@ type Store struct {
 
 	// writeMu serializes write transactions. SQLite allows a single writer, and taking the
 	// lock in the process is cheaper and far more predictable than letting concurrent writers
-	// collide and retry on SQLITE_BUSY.
+	// collide and retry on SQLITE_BUSY. On PostgreSQL it spares the pool connections that would
+	// only queue on the advisory lock; the lock itself is what orders writers across processes.
 	writeMu sync.Mutex
 }
 
@@ -62,8 +77,59 @@ func WithPasswordHashCost(cost int) Option {
 	return func(s *Store) { s.hashCost = cost }
 }
 
-// Open opens (creating if needed) the database at path and brings its schema up to date.
-func Open(ctx context.Context, path string, sealer *secret.Sealer, log zerolog.Logger, opts ...Option) (*Store, error) {
+// Open opens the database at target and brings its schema up to date. A postgres:// or
+// postgresql:// URL names a PostgreSQL database, which has to exist. Anything else is SQLite: a
+// sqlite:// URL, or the bare path of the file, created if needed.
+func Open(ctx context.Context, target string, sealer *secret.Sealer, log zerolog.Logger, opts ...Option) (*Store, error) {
+	d := targetDialect(target)
+
+	var (
+		raw *sql.DB
+		err error
+	)
+
+	switch d {
+	case dialectPostgres:
+		raw, err = sql.Open("pgx", target)
+	default:
+		raw, err = openSQLite(strings.TrimPrefix(target, "sqlite://"))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+
+	// WAL lets readers run while the single writer holds its transaction, so a modest pool is
+	// useful; the writer is serialized by writeMu rather than by the pool size.
+	raw.SetMaxOpenConns(8)
+	raw.SetMaxIdleConns(4)
+	raw.SetConnMaxLifetime(time.Hour)
+
+	if err := raw.PingContext(ctx); err != nil {
+		_ = raw.Close()
+
+		return nil, fmt.Errorf("opening database %s: %w", describeTarget(target, d), err)
+	}
+
+	s := &Store{
+		db: &database{DB: raw, d: d}, dialect: d, location: describeTarget(target, d), sealer: sealer, log: log,
+		idRange:  DefaultIDRange(),
+		hashCost: DefaultPasswordHashCost,
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	if err := s.migrate(ctx); err != nil {
+		_ = raw.Close()
+
+		return nil, err
+	}
+
+	return s, nil
+}
+
+func openSQLite(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); len(dir) > 0 && dir != "." {
 		if err := ensureDir(dir); err != nil {
 			return nil, err
@@ -76,47 +142,35 @@ func Open(ctx context.Context, path string, sealer *secret.Sealer, log zerolog.L
 		"&_pragma=foreign_keys(1)" +
 		"&_pragma=synchronous(NORMAL)"
 
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
-
-	// WAL lets readers run while the single writer holds its transaction, so a modest pool is
-	// useful; the writer is serialized by writeMu rather than by the pool size.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	db.SetConnMaxLifetime(time.Hour)
-
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-
-		return nil, fmt.Errorf("opening database %s: %w", path, err)
-	}
-
-	s := &Store{
-		db: db, sealer: sealer, log: log,
-		idRange:  DefaultIDRange(),
-		hashCost: DefaultPasswordHashCost,
-	}
-
-	for _, opt := range opts {
-		opt(s)
-	}
-
-	if err := s.migrate(ctx); err != nil {
-		_ = db.Close()
-
-		return nil, err
-	}
-
-	return s, nil
+	return sql.Open("sqlite", dsn)
 }
+
+// describeTarget names a database for a message without the password a PostgreSQL URL may carry.
+func describeTarget(target string, d dialect) string {
+	if d != dialectPostgres {
+		return "sqlite://" + strings.TrimPrefix(target, "sqlite://")
+	}
+
+	u, err := url.Parse(target)
+	if err != nil {
+		return "postgres"
+	}
+
+	return u.Redacted()
+}
+
+// Location names where the data lives for a log line: the SQLite file, or the PostgreSQL URL with
+// its password removed.
+func (s *Store) Location() string { return s.location }
+
+// Dialect names the database the store runs on, "sqlite" or "postgres".
+func (s *Store) Dialect() string { return s.dialect.String() }
 
 // Close releases the database.
 func (s *Store) Close() error { return s.db.Close() }
 
 // DB exposes the connection for callers that need to run their own queries, such as health checks.
-func (s *Store) DB() *sql.DB { return s.db }
+func (s *Store) DB() *sql.DB { return s.db.DB }
 
 // migrate applies every embedded migration that has not been recorded yet, in name order.
 func (s *Store) migrate(ctx context.Context) error {
@@ -124,6 +178,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		name       TEXT PRIMARY KEY,
 		applied_at INTEGER NOT NULL
 	)`
+
+	if s.dialect == dialectPostgres {
+		// Held for the whole run on one connection, so a second service starting against the same
+		// database waits here until the first has finished, then finds nothing left to apply.
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
+			return fmt.Errorf("locking the schema: %w", err)
+		}
+		defer func() {
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockKey)
+		}()
+	}
 
 	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
 		return fmt.Errorf("creating migration table: %w", err)
@@ -151,7 +222,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	_ = rows.Close()
 
-	entries, err := fs.Glob(migrationFS, "migrations/*.sql")
+	entries, err := fs.Glob(migrationFS, "migrations/"+s.dialect.String()+"/*.sql")
 	if err != nil {
 		return err
 	}
@@ -176,7 +247,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
+		// The script goes to the driver as written: it is not a query with placeholders, and a
+		// question mark in one of its comments must stay a question mark.
+		if _, err := tx.Tx.ExecContext(ctx, string(body)); err != nil {
 			_ = tx.Rollback()
 
 			return fmt.Errorf("applying migration %s: %w", name, err)
@@ -198,13 +271,24 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // write runs fn inside a write transaction, serialized against other writers.
-func (s *Store) write(ctx context.Context, fn func(tx *sql.Tx) error) error {
+func (s *Store) write(ctx context.Context, fn func(tx *Tx) error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
+	}
+
+	if s.dialect == dialectPostgres {
+		// Released with the transaction. Several services may share the database, and the checks
+		// made in Go under this lock -- that a name is free, that an id is unused -- hold only if
+		// writers are ordered across all of them.
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?)`, writeLockKey); err != nil {
+			_ = tx.Rollback()
+
+			return err
+		}
 	}
 
 	if err := fn(tx); err != nil {
@@ -234,7 +318,7 @@ func (s *Store) GetMeta(ctx context.Context, key string) (string, error) {
 
 // SetMeta writes a metadata value.
 func (s *Store) SetMeta(ctx context.Context, key, value string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO meta (key, value) VALUES (?, ?)
 			 ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
@@ -245,11 +329,19 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	})
 }
 
+// pgUniqueViolation is the SQLSTATE of a duplicate key.
+const pgUniqueViolation = "23505"
+
 // translateErr maps driver-level constraint violations onto the package's sentinel errors, so
 // callers can answer "already exists" without matching on driver message text everywhere.
 func translateErr(err error) error {
 	if err == nil {
 		return nil
+	}
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
+		return fmt.Errorf("%w: %s", ErrConflict, pgErr.Message)
 	}
 
 	msg := err.Error()

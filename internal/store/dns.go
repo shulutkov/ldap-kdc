@@ -164,8 +164,8 @@ func (s *Store) insertDNSRecord(ctx context.Context, r *DNSRecord, origin string
 	now := time.Now().UTC()
 	r.Origin = origin
 
-	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
+	return s.write(ctx, func(tx *Tx) error {
+		id, err := insertID(ctx, tx, `
 			INSERT INTO dns_records (name, type, ttl, value, origin, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			r.Name, r.Type, r.TTL, r.Value, origin, now.Unix(), now.Unix())
@@ -173,9 +173,7 @@ func (s *Store) insertDNSRecord(ctx context.Context, r *DNSRecord, origin string
 			return err
 		}
 
-		if r.ID, err = res.LastInsertId(); err != nil {
-			return err
-		}
+		r.ID = id
 
 		r.CreatedAt = now
 		r.UpdatedAt = now
@@ -187,7 +185,7 @@ func (s *Store) insertDNSRecord(ctx context.Context, r *DNSRecord, origin string
 // DeleteDNSRecord removes one administrator's record by id. A registered record is refused with
 // ErrConflict: it belongs to the source that registered it, and goes when that does.
 func (s *Store) DeleteDNSRecord(ctx context.Context, id int64) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		var origin string
 
 		err := tx.QueryRowContext(ctx, `SELECT origin FROM dns_records WHERE id = ?`, id).Scan(&origin)
@@ -209,7 +207,7 @@ func (s *Store) DeleteDNSRecord(ctx context.Context, id int64) error {
 // DeleteDiscoveredDNSRecord removes a record a source registered, once that source no longer
 // stands behind it. An administrator's record is refused.
 func (s *Store) DeleteDiscoveredDNSRecord(ctx context.Context, id int64) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		var origin string
 
 		err := tx.QueryRowContext(ctx, `SELECT origin FROM dns_records WHERE id = ?`, id).Scan(&origin)
@@ -228,7 +226,7 @@ func (s *Store) DeleteDiscoveredDNSRecord(ctx context.Context, id int64) error {
 	})
 }
 
-func deleteDNSRecordTx(ctx context.Context, tx *sql.Tx, id int64) error {
+func deleteDNSRecordTx(ctx context.Context, tx *Tx, id int64) error {
 	res, err := tx.ExecContext(ctx, `DELETE FROM dns_records WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -250,7 +248,7 @@ func deleteDNSRecordTx(ctx context.Context, tx *sql.Tx, id int64) error {
 func (s *Store) DeleteDNSRecordsAt(ctx context.Context, name, recordType string) (int64, error) {
 	var removed int64
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		query := `DELETE FROM dns_records WHERE name = ? AND origin = ''`
 		args := []any{NormalizeDNSName(name)}
 
@@ -294,9 +292,12 @@ func collectDNSRecords(rows *sql.Rows) ([]DNSRecord, error) {
 // bumpZoneSerial raises the zone's serial inside the write that changed the zone. It takes the
 // time when that is later than the serial, and otherwise adds one, so two changes in the same
 // second still leave the serial different.
-func bumpZoneSerial(ctx context.Context, tx *sql.Tx) error {
+func bumpZoneSerial(ctx context.Context, tx *Tx) error {
+	now := time.Now().Unix()
+
 	_, err := tx.ExecContext(ctx,
-		`UPDATE dns_zone SET serial = MAX(serial + 1, ?) WHERE id = 1`, time.Now().Unix())
+		`UPDATE dns_zone SET serial = CASE WHEN serial + 1 > ? THEN serial + 1 ELSE ? END WHERE id = 1`,
+		now, now)
 
 	return err
 }

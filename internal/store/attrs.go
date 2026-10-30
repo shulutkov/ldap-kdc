@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -102,7 +101,7 @@ func (s *Store) loadAttrs(ctx context.Context, q querier, kind string, ownerIDs 
 }
 
 // replaceAttrs writes an object's custom attributes to match the value in memory.
-func (s *Store) replaceAttrs(ctx context.Context, tx *sql.Tx, kind string, ownerID int64, attrs map[string][]string) error {
+func (s *Store) replaceAttrs(ctx context.Context, tx *Tx, kind string, ownerID int64, attrs map[string][]string) error {
 	if err := ValidateCustomAttrs(attrs); err != nil {
 		return err
 	}
@@ -133,7 +132,7 @@ func (s *Store) replaceAttrs(ctx context.Context, tx *sql.Tx, kind string, owner
 
 // deleteAttrs removes every custom attribute of one object. The table is shared by both kinds of
 // object and so cannot carry a foreign key, which is why a deletion has to say so explicitly.
-func deleteAttrs(ctx context.Context, tx *sql.Tx, kind string, ownerID int64) error {
+func deleteAttrs(ctx context.Context, tx *Tx, kind string, ownerID int64) error {
 	_, err := tx.ExecContext(ctx,
 		`DELETE FROM object_attrs WHERE owner_kind = ? AND owner_id = ?`, kind, ownerID)
 

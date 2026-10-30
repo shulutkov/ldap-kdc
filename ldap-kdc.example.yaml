@@ -64,7 +64,10 @@ server:
   id_range_secondary_base_rid: 100000000
 
 database:
-  path: /var/lib/ldap-kdc/ldap-kdc.db
+  # sqlite:// followed by the file, or postgres:// for a PostgreSQL database that already exists;
+  # the service creates its tables, and the citext extension they use, itself.
+  # url: postgres://ldap_kdc:password@db.example.com:5432/ldap_kdc?sslmode=verify-full
+  url: sqlite:///var/lib/ldap-kdc/ldap-kdc.db
 
   # Every Kerberos key in the database is encrypted with this file. It is generated on first
   # start; back it up separately, because the database cannot be read without it.

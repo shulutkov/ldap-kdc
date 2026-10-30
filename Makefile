@@ -19,7 +19,7 @@ UI_DIST := internal/api/ui/dist
 # installed is what the lock file names.
 UI_DEPS := ui/node_modules/.package-lock.json
 
-.PHONY: build image test e2e check fmt vet ui ui-deps swagger-ui clean
+.PHONY: build image test test-postgres e2e check fmt vet ui ui-deps swagger-ui clean
 
 ## build: the console, then the binary that embeds it. This is the one way the service is built —
 ## the image build runs it too — because a binary built without `make ui` embeds whatever happened
@@ -34,6 +34,14 @@ image:
 ## test: the unit and integration suites; no container runtime and no node needed
 test: $(UI_DIST)/index.html
 	go test -race ./...
+
+## test-postgres: the store's suite again, on a throwaway PostgreSQL in a container (needs docker)
+test-postgres: $(UI_DIST)/index.html
+	@docker rm -f ldap-kdc-test-pg >/dev/null 2>&1 || true
+	docker run -d --rm --name ldap-kdc-test-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:54329:5432 postgres:17-alpine >/dev/null
+	@until docker exec ldap-kdc-test-pg pg_isready -U postgres -h 127.0.0.1 >/dev/null 2>&1; do sleep 1; done
+	LDAPKDC_TEST_POSTGRES='postgres://postgres:test@127.0.0.1:54329/postgres?sslmode=disable' \
+		go test -race -count=1 ./internal/store; status=$$?; docker rm -f ldap-kdc-test-pg >/dev/null; exit $$status
 
 ## e2e: drive the built binary from a container with MIT krb5, OpenLDAP and dig.
 ## Needs a container runtime; skips itself when none is reachable.

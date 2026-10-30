@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"time"
 )
@@ -48,23 +47,18 @@ func (s *Store) AddCertificate(ctx context.Context, userName string, c *Certific
 	c.Serial = normalizeSerial(c.Serial)
 	c.Issuer = strings.ToLower(c.Issuer)
 
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err
 		}
 
 		now := time.Now().UTC()
-		res, err := tx.ExecContext(ctx, `
+		id, err := insertID(ctx, tx, `
 			INSERT INTO user_certificates
 				(user_id, issuer, serial, subject, der, not_before, not_after, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			u.ID, c.Issuer, c.Serial, c.Subject, c.DER, c.NotBefore.Unix(), c.NotAfter.Unix(), now.Unix())
-		if err != nil {
-			return err
-		}
-
-		id, err := res.LastInsertId()
 		if err != nil {
 			return err
 		}
@@ -125,7 +119,7 @@ func scanCertificate(sc scanner) (*Certificate, error) {
 func (s *Store) ListUserCertificates(ctx context.Context, userName string) ([]Certificate, error) {
 	var out []Certificate
 
-	err := s.readUser(ctx, userName, func(tx *sql.Tx) error {
+	err := s.readUser(ctx, userName, func(tx *Tx) error {
 		list, err := s.listCertificates(ctx, tx, ` WHERE u.name = ? ORDER BY uc.id`, userName)
 		out = list
 
@@ -205,7 +199,7 @@ func (s *Store) GetCertificate(ctx context.Context, userName string, issuer stri
 	issuer = strings.ToLower(issuer)
 	serial = normalizeSerial(serial)
 
-	err := s.readUser(ctx, userName, func(tx *sql.Tx) error {
+	err := s.readUser(ctx, userName, func(tx *Tx) error {
 		list, err := s.listCertificates(ctx, tx,
 			` WHERE u.name = ? AND uc.issuer = ? AND uc.serial = ?`, userName, issuer, serial)
 		if err != nil {
@@ -229,7 +223,7 @@ func (s *Store) DeleteCertificate(ctx context.Context, userName string, issuer s
 	issuer = strings.ToLower(issuer)
 	serial = normalizeSerial(serial)
 
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		u, err := s.getUser(ctx, tx, `name = ?`, userName)
 		if err != nil {
 			return err
@@ -258,7 +252,7 @@ func (s *Store) DeleteCertificate(ctx context.Context, userName string, issuer s
 // is ErrNotFound rather than an empty answer that looks like success. It is a plain read
 // transaction: it does not take the write lock, so reading certificates never queues behind a
 // write, and a write never queues behind a read of them.
-func (s *Store) readUser(ctx context.Context, userName string, fn func(tx *sql.Tx) error) error {
+func (s *Store) readUser(ctx context.Context, userName string, fn func(tx *Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

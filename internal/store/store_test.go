@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
+	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,7 +20,57 @@ import (
 	"github.com/shulutkov/ldap-kdc/internal/secret"
 )
 
+// postgresEnv names the environment variable that points the suite at a PostgreSQL server, as a
+// connection URL to a database the test may create schemas in. Without it the suite runs on SQLite.
+const postgresEnv = "LDAPKDC_TEST_POSTGRES"
+
+// testTarget is what a test opens: a SQLite file in dir, or a schema of its own on the PostgreSQL
+// server the environment names, dropped when the test ends.
+func testTarget(t *testing.T, dir string) string {
+	t.Helper()
+
+	base := os.Getenv(postgresEnv)
+	if len(base) == 0 {
+		return filepath.Join(dir, "test.db")
+	}
+
+	schema := fmt.Sprintf("t_%d_%d", time.Now().UnixNano(), rand.Int64())
+
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatalf("postgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE")
+		_ = admin.Close()
+	})
+
+	// The extension is shared by every schema, so it is installed once where all of them can see it.
+	for _, q := range []string{"CREATE EXTENSION IF NOT EXISTS citext SCHEMA public", "CREATE SCHEMA " + schema} {
+		if _, err := admin.Exec(q); err != nil {
+			t.Fatalf("postgres: %s: %v", q, err)
+		}
+	}
+
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("%s: %v", postgresEnv, err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema+",public")
+	u.RawQuery = q.Encode()
+
+	return u.String()
+}
+
 func testStore(t *testing.T) *Store {
+	t.Helper()
+
+	return testStoreAt(t, testTarget(t, t.TempDir()))
+}
+
+// testStoreAt opens a store on target, which a second store may share.
+func testStoreAt(t *testing.T, target string) *Store {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -32,7 +87,7 @@ func testStore(t *testing.T) *Store {
 
 	// Hashing at the production cost would have this suite spend minutes proving nothing about
 	// the cost. What it is is measured by BenchmarkHashPassword instead.
-	s, err := Open(context.Background(), filepath.Join(dir, "test.db"), sealer,
+	s, err := Open(context.Background(), target, sealer,
 		zerolog.New(io.Discard), WithPasswordHashCost(bcrypt.MinCost))
 	if err != nil {
 		t.Fatalf("open: %v", err)

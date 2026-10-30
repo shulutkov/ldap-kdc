@@ -48,8 +48,8 @@ func (s *Store) CreateTrust(ctx context.Context, t *Trust) error {
 	t.RemoteRealm = strings.ToUpper(t.RemoteRealm)
 	now := time.Now().UTC()
 
-	return s.write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
+	return s.write(ctx, func(tx *Tx) error {
+		id, err := insertID(ctx, tx, `
 			INSERT INTO trusts (remote_realm, direction, transitive, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)`,
 			t.RemoteRealm, string(t.Direction), t.Transitive, t.Enabled, now.Unix(), now.Unix())
@@ -57,9 +57,7 @@ func (s *Store) CreateTrust(ctx context.Context, t *Trust) error {
 			return err
 		}
 
-		if t.ID, err = res.LastInsertId(); err != nil {
-			return err
-		}
+		t.ID = id
 
 		t.CreatedAt = now
 		t.UpdatedAt = now
@@ -72,7 +70,7 @@ func (s *Store) CreateTrust(ctx context.Context, t *Trust) error {
 func (s *Store) UpdateTrust(ctx context.Context, realm string, mutate func(*Trust) error) (*Trust, error) {
 	var out *Trust
 
-	err := s.write(ctx, func(tx *sql.Tx) error {
+	err := s.write(ctx, func(tx *Tx) error {
 		t, err := scanTrust(tx.QueryRowContext(ctx, `
 			SELECT id, remote_realm, direction, transitive, enabled, created_at, updated_at
 			FROM trusts WHERE remote_realm = ?`, strings.ToUpper(realm)))
@@ -108,7 +106,7 @@ func (s *Store) UpdateTrust(ctx context.Context, realm string, mutate func(*Trus
 // DeleteTrust removes a trust record. The krbtgt principals that carry its keys are separate
 // objects and are not removed here.
 func (s *Store) DeleteTrust(ctx context.Context, realm string) error {
-	return s.write(ctx, func(tx *sql.Tx) error {
+	return s.write(ctx, func(tx *Tx) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM trusts WHERE remote_realm = ?`, strings.ToUpper(realm))
 		if err != nil {
 			return err

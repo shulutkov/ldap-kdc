@@ -14,9 +14,10 @@ a realm, accounts and tokens in one process and one file, so that what is being 
 under test and not the identity infrastructure around it. It is not a production directory, and the
 list below is what to weigh before treating it as one rather than a to-do list that ends.
 
-- **One process, one file, no replication.** The database is SQLite on local disk. There is no
-  second copy, no failover and no backup but the one you take: every account and every key is in
-  that file, and losing it loses the realm.
+- **No replication, no failover, no backup but yours.** The database is a SQLite file on local
+  disk, or a PostgreSQL database you run (`database.url` says which). The service makes no second copy: every
+  account and every key is in that one database, and losing it loses the realm. PostgreSQL gives
+  the replication and backup tooling to avoid that, but the service itself stays a single node.
 - **No audit trail worth the name.** Operations are logged; there is no tamper-evident record, no
   retention policy and nothing to answer "who changed this, when" after the fact.
 - **The master key sits beside what it protects.** Key material is sealed with AES-256-GCM under a
@@ -797,7 +798,8 @@ Stated plainly, because finding them at deployment time is worse:
   ordinary Kerberos services; only Windows and Samba authorization data is missing.
 * **User-to-user authentication (ENC-TKT-IN-SKEY) is not implemented**; such requests are refused
   with `KDC_ERR_BADOPTION`.
-* **Single node.** SQLite with one writer; there is no replication.
+* **Single node.** SQLite with one writer, or PostgreSQL with writers ordered by an advisory lock;
+  the service keeps no replica of its own and what it holds in memory, the replay cache among it, is per process.
 
 ## Documentation
 
@@ -815,7 +817,7 @@ The `docs/` directory carries the detailed reference this README only narrates:
 
 ```
 cmd/ldap-kdc      the binary: configuration, start-up, ordered shutdown
-internal/store    SQLite: users, groups, principals, sealed key material, migrations
+internal/store    SQLite and PostgreSQL: users, groups, principals, sealed key material, migrations
 internal/krbkeys  principal names, salts, string-to-key, keytab encoding
 internal/kdc      AS and TGS exchanges, PAC, S4U, cross-realm, replay cache
 internal/kpasswd  RFC 3244 password changing

@@ -77,7 +77,7 @@ against the directory holding the YAML file. Absolute paths are used as given, a
 was loaded (environment-only configuration) relative paths stay relative to the working
 directory.
 
-Resolved this way: `database.path`, `database.master_key_file`, `ldap.cert_path`,
+Resolved this way: the file of a `sqlite://` `database.url`, `database.master_key_file`, `ldap.cert_path`,
 `ldap.key_path`, `ldaps.cert_path`, `ldaps.key_path`, `api.cert_path`, `api.key_path`,
 `api.token_file` (when it is read) and `bootstrap.file`.
 
@@ -130,10 +130,18 @@ as far as a member server is concerned. See [directory](directory.md).
 
 ## `database`
 
-| Key               | Env                  | Type   | Default       | Meaning                                                                                                                                                      |
-|-------------------|----------------------|--------|---------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `path`            | `DB_PATH`            | string | `ldap-kdc.db` | The SQLite database file. Required (the default satisfies this).                                                                                             |
-| `master_key_file` | `DB_MASTER_KEY_FILE` | string | `master.key`  | The 32-byte key every Kerberos key in the database is sealed with. Generated on first start; back it up separately — the database cannot be read without it. |
+| Key               | Env                  | Type   | Default                | Meaning                                                                                                                                                                                                            |
+|-------------------|----------------------|--------|------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `url`             | `DB_URL`             | string | `sqlite://ldap-kdc.db` | The database. `sqlite://` followed by the file — relative to the configuration file, or absolute as `sqlite:///var/lib/ldap-kdc/ldap-kdc.db` — or `postgres://user:password@host:5432/dbname?sslmode=verify-full`. |
+| `master_key_file` | `DB_MASTER_KEY_FILE` | string | `master.key`           | The 32-byte key every Kerberos key in the database is sealed with. Generated on first start; back it up separately — the database cannot be read without it.                                                       |
+
+With a `postgres://` URL the database must already exist and the role must be able to create tables in it. The
+first start also runs `CREATE EXTENSION IF NOT EXISTS citext`, which PostgreSQL 13 and later allow
+the database's owner to do (the extension ships in `postgresql-contrib` on some distributions). The
+URL accepts everything pgx does, including `sslmode`, and the standard `PG*` environment variables (`PGPASSWORD`,
+`PGSSLROOTCERT`, …) fill in what it leaves out, which keeps the password out of the
+configuration file. The log never prints the password. See [architecture](architecture.md) for how
+the two databases differ.
 
 ## `ldap` — cleartext listener
 
@@ -304,7 +312,7 @@ another. The Kerberos-side numbers correspond to FreeIPA's `krbPwdMaxFailure`,
 
 - `server.realm` is required and must match the realm pattern; `server.domain_sid` must begin
   with `S-1-5-21-`; `server.ssh_key_attrs` must name at least one attribute.
-- `database.path` and `database.master_key_file` are required.
+- `database.url` must be a `sqlite://` or `postgres://` URL, and `database.master_key_file` is required.
 - Every **enabled** listener's address must parse as `host:port`.
 - TLS: `ldap` (with `tls: true`), `api` (with `tls: true`) and `oidc` (with `tls: true`) require
   both `cert_path` and `key_path`. `ldaps` requires both or neither (the deferred-certificate
@@ -330,7 +338,7 @@ server:
   realm: EXAMPLE.COM
 
 database:
-  path: /var/lib/ldap-kdc/ldap-kdc.db
+  url: sqlite:///var/lib/ldap-kdc/ldap-kdc.db
   master_key_file: /var/lib/ldap-kdc/master.key
 ```
 
@@ -361,7 +369,7 @@ server:
   id_range_secondary_base_rid: 100000000
 
 database:
-  path: /var/lib/ldap-kdc/ldap-kdc.db
+  url: sqlite:///var/lib/ldap-kdc/ldap-kdc.db
   master_key_file: /var/lib/ldap-kdc/master.key
 
 ldap:
